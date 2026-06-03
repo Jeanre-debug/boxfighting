@@ -2246,24 +2246,24 @@ async function enterMatchedLobby(lobbyId) {
 
 // ─── Online button wiring ─────────────────────────────────────────────────────
 document.getElementById('btn-play-online').addEventListener('click', async () => {
+  // Show auth screen immediately — don't wait for the network call
+  document.getElementById('menu').classList.remove('show');
+  document.getElementById('auth').classList.add('show');
+  document.getElementById('auth-err').textContent = '';
+
   try {
     const { data: { user } } = await sb.auth.getUser();
-    document.getElementById('menu').classList.remove('show');
     if (user) {
       currentUser = user;
       if (!currentProfile) await loadProfile();
       if (currentProfile) {
+        document.getElementById('auth').classList.remove('show');
         document.getElementById('lobby-screen').classList.add('show');
-      } else {
-        document.getElementById('auth').classList.add('show');
       }
-    } else {
-      document.getElementById('auth').classList.add('show');
+      // else: loadProfile showed an error, stay on auth
     }
+    // else: not logged in, already on auth screen — do nothing
   } catch (e) {
-    // Supabase unreachable — show auth anyway so user sees an error path
-    document.getElementById('menu').classList.remove('show');
-    document.getElementById('auth').classList.add('show');
     document.getElementById('auth-err').textContent = 'Connection error — check your network.';
   }
 });
