@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>BOX FIGHT</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
@@ -51,6 +52,57 @@ canvas { display:block; border:2px solid #2a2a2a; cursor:none; }
 #resultSub { font-size:14px; color:#888; letter-spacing:1px; }
 #legend { margin-top:10px; font-size:11px; color:#555; line-height:2; text-align:center; }
 #legend span { color:#888; }
+/* ── auth / lobby ── */
+.auth-box, .lobby-box, .in-lobby-box {
+  background:#111; border:1px solid #2a2a2a; border-radius:6px;
+  padding:32px 40px; width:340px;
+  display:flex; flex-direction:column; gap:10px;
+}
+.auth-title { font-size:22px; letter-spacing:5px; color:#fff; text-align:center; margin-bottom:4px; }
+.auth-tabs { display:flex; gap:0; }
+.auth-tab {
+  flex:1; padding:8px 0; font-size:12px; font-family:monospace; letter-spacing:1px;
+  cursor:pointer; background:#1a1a1a; color:#555; border:1px solid #333;
+  transition:all 0.12s;
+}
+.auth-tab:first-child { border-radius:3px 0 0 3px; }
+.auth-tab:last-child  { border-radius:0 3px 3px 0; }
+.auth-tab.sel { background:#1a2a4a; color:#88aaff; border-color:#4466aa; }
+.field {
+  padding:9px 12px; font-size:13px; font-family:monospace;
+  background:#0d0d0d; color:#eee; border:1px solid #2a2a2a; border-radius:3px; outline:none;
+  transition:border-color 0.12s;
+}
+.field:focus { border-color:#4466aa; }
+.field::placeholder { color:#444; }
+.err-msg { font-size:11px; color:#ff5544; text-align:center; min-height:14px; }
+.ok-msg  { font-size:11px; color:#44cc77; text-align:center; min-height:14px; }
+.lobby-header { display:flex; justify-content:space-between; align-items:center; }
+.lobby-title  { font-size:14px; color:#888; letter-spacing:2px; }
+.lobby-user   { font-size:13px; color:#fff; font-weight:bold; }
+.mode-pick { display:flex; gap:6px; }
+.join-row  { display:flex; gap:8px; }
+.join-row input { flex:1; }
+.code-banner {
+  text-align:center; padding:14px; background:#0d1a2a; border:1px solid #225588;
+  border-radius:4px;
+}
+.code-banner .code { font-size:32px; letter-spacing:8px; color:#88ccff; font-weight:bold; }
+.code-banner .label { font-size:10px; color:#446688; letter-spacing:2px; margin-bottom:4px; }
+.player-list { display:flex; flex-direction:column; gap:6px; min-height:80px; }
+.team-label  { font-size:10px; color:#445566; letter-spacing:2px; margin-top:4px; }
+.player-row  { display:flex; align-items:center; gap:8px; padding:6px 10px; background:#0d0d0d; border-radius:3px; }
+.player-dot  { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.player-name { flex:1; font-size:12px; color:#ccc; }
+.player-ready{ font-size:10px; color:#44cc77; letter-spacing:1px; }
+.player-wait { font-size:10px; color:#334455; letter-spacing:1px; }
+.lobby-status-msg { font-size:12px; color:#667788; text-align:center; }
+#online-indicator {
+  position:fixed; top:10px; right:10px; font-size:11px; font-family:monospace;
+  background:rgba(0,0,0,0.6); padding:4px 10px; border-radius:3px; z-index:100;
+  display:none;
+}
+#online-indicator.show { display:block; }
 /* ── settings ── */
 #settings { overflow-y:auto; }
 .settings-box {
@@ -99,8 +151,66 @@ canvas { display:block; border:2px solid #2a2a2a; cursor:none; }
     <button class="big-btn blue" id="btn-vsbot">VS BOT</button>
     <button class="big-btn orange" id="btn-survival">SURVIVAL</button>
     <button class="big-btn green" id="btn-freebuild">FREE BUILD</button>
+    <button class="big-btn" id="btn-play-online" style="background:rgba(80,20,120,0.8);color:#cc88ff;border:2px solid #662299;width:200px">PLAY ONLINE</button>
     <button class="sm-btn" id="btn-settings-menu" style="width:200px;margin-top:4px">SETTINGS / KEYBINDS</button>
   </div>
+
+  <!-- Auth overlay -->
+  <div id="auth" class="overlay" style="z-index:20">
+    <div class="auth-box">
+      <div class="auth-title">BOX FIGHT</div>
+      <div class="auth-tabs">
+        <button class="auth-tab sel" id="tab-si">SIGN IN</button>
+        <button class="auth-tab" id="tab-su">SIGN UP</button>
+      </div>
+      <input class="field" id="auth-email" type="email" placeholder="email">
+      <input class="field" id="auth-pass"  type="password" placeholder="password">
+      <input class="field" id="auth-user"  type="text" placeholder="username (3–16 chars)" style="display:none">
+      <button class="big-btn blue" id="btn-auth-submit" style="width:100%">SIGN IN</button>
+      <div class="err-msg" id="auth-err"></div>
+      <button class="sm-btn" id="btn-auth-back" style="align-self:center;margin-top:2px">← BACK TO MENU</button>
+    </div>
+  </div>
+
+  <!-- Online lobby hub -->
+  <div id="lobby-screen" class="overlay" style="z-index:20">
+    <div class="lobby-box">
+      <div class="lobby-header">
+        <span class="lobby-title">ONLINE</span>
+        <span class="lobby-user" id="online-username"></span>
+      </div>
+      <div class="mode-pick">
+        <button class="diff-btn sel" data-m="1v1">1v1</button>
+        <button class="diff-btn" data-m="2v2">2v2</button>
+      </div>
+      <button class="big-btn blue" id="btn-create-lobby" style="width:100%">CREATE LOBBY</button>
+      <div class="join-row">
+        <input class="field join-row" id="join-code-input" placeholder="XXXX" maxlength="4" style="text-transform:uppercase;letter-spacing:4px;font-size:16px">
+        <button class="sm-btn" id="btn-join-lobby">JOIN</button>
+      </div>
+      <div class="err-msg" id="lobby-err"></div>
+      <button class="sm-btn" id="btn-lobby-back" style="align-self:center">← MENU</button>
+    </div>
+  </div>
+
+  <!-- Waiting room -->
+  <div id="in-lobby" class="overlay" style="z-index:20">
+    <div class="in-lobby-box">
+      <div class="code-banner">
+        <div class="label">LOBBY CODE — share with friends</div>
+        <div class="code" id="lobby-code-disp">----</div>
+      </div>
+      <div id="mode-disp" style="font-size:11px;color:#446688;text-align:center;letter-spacing:2px">1V1</div>
+      <div class="player-list" id="player-list"></div>
+      <div class="lobby-status-msg" id="lobby-status-msg">Waiting for players…</div>
+      <div class="btn-row" style="justify-content:center">
+        <button class="big-btn blue" id="btn-ready" style="width:140px">READY</button>
+        <button class="sm-btn" id="btn-leave-lobby">LEAVE</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="online-indicator"></div>
 
   <div id="pause" class="overlay">
     <div style="font-size:40px;font-weight:bold;letter-spacing:6px;color:#fff;text-shadow:0 0 24px rgba(255,255,255,0.35)">PAUSED</div>
@@ -136,6 +246,11 @@ canvas { display:block; border:2px solid #2a2a2a; cursor:none; }
 
 <script>
 'use strict';
+// ─── Supabase ─────────────────────────────────────────────────────────────────
+const SB_URL  = 'https://dlaimuzwnwcpzcttwahdg.supabase.co';
+const SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRsYWltdXpud2NwemN0dHdhaGRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0ODQ1MDUsImV4cCI6MjA5NjA2MDUwNX0.rYIneNjm8SqHjXpB_IHGtkJ4R3lOkpzJsPKI09vTdpA';
+const sb = supabase.createClient(SB_URL, SB_ANON);
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -234,6 +349,14 @@ let keys = {}, mouse = { x: W/2, y: H/2, buttons: 0 };
 let virtualMouse = { x: W/2, y: H/2 };
 let paused = false;
 let lastTime = 0, timeScale = 1.0, slowMoTimer = 0;
+
+// Online
+let currentUser = null, currentProfile = null;
+let currentLobby = null, lobbyChannel = null;
+let remotePlayers = {};     // userId → bot entity in bots[]
+let myTeam = 0, lobbyModeSelected = '1v1';
+let stateInterval = null;
+let amIReady = false;
 let shake = { intensity: 0 };
 let playerHitFlash = 0, killFlash = 0;
 let combo = 0, lastComboHit = 0;
@@ -421,13 +544,16 @@ function tryBuild(entity) {
   if (entity.materials !== Infinity) entity.materials -= MAT_COST;
   entity.lastBuild = now;
   spawnParticles(cx*CELL+CELL/2, cy*CELL+CELL/2, '#5588ff', 4);
+  if (gameMode === 'online' && entity === player) netSend('wall', { t:'place', key });
   return true;
 }
 function tryEdit(entity, toState) {
   const { cx, cy } = entityCell(entity);
   const key = edgeKey(cx, cy, angleToSide(entity.aimAngle));
   if (!walls[key]) return;
-  walls[key].state = toState !== undefined ? toState : (walls[key].state === 'full' ? 'window' : 'full');
+  const ns = toState !== undefined ? toState : (walls[key].state === 'full' ? 'window' : 'full');
+  walls[key].state = ns;
+  if (gameMode === 'online' && entity === player) netSend('wall', { t:'edit', key, state:ns });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -496,7 +622,7 @@ function createExplosion(x, y, owner) {
     const d = Math.sqrt(dist2(wx, wy, x, y));
     if (d < EXPL_RADIUS) {
       wall.hp -= 80 * (1 - d/EXPL_RADIUS*0.5);
-      if (wall.hp <= 0) { spawnParticles(wx, wy, '#ffaa33', 5); delete walls[key]; }
+      if (wall.hp <= 0) { spawnParticles(wx, wy, '#ffaa33', 5); delete walls[key]; if (gameMode==='online'&&owner===player) netSend('wall',{t:'destroy',key}); }
     }
   }
 
@@ -524,7 +650,7 @@ function spawnBullet(entity, angle, wep) {
   const barrel = entity.radius + 6;
   const bx = entity.x + Math.cos(entity.aimAngle)*barrel;
   const by = entity.y + Math.sin(entity.aimAngle)*barrel;
-  bullets.push({
+  const bul = {
     x: bx, y: by, prevX: bx, prevY: by,
     vx: Math.cos(angle)*BULLET_SPEED,
     vy: Math.sin(angle)*BULLET_SPEED,
@@ -532,7 +658,10 @@ function spawnBullet(entity, angle, wep) {
     wallDmg: wep.wallDmg, playerDmg: wep.playerDmg,
     col: wep.col, sz: wep.sz,
     pierce: !!wep.pierce, isRocket: !!wep.isRocket,
-  });
+  };
+  bullets.push(bul);
+  if (gameMode === 'online' && entity === player)
+    netSend('bullet', { x:bx, y:by, vx:bul.vx, vy:bul.vy, wallDmg:wep.wallDmg, playerDmg:wep.playerDmg, col:wep.col, sz:wep.sz, pierce:!!wep.pierce, isRocket:!!wep.isRocket, range:wep.range });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -597,7 +726,7 @@ function trySwingPickaxe(entity) {
     doShake(4);
     wall.hp -= wep.wallDmg;
     spawnParticles(hitPt.x, hitPt.y, '#f0c83c', 5);
-    if (wall.hp <= 0) { const r = wallRect(key); spawnParticles(r.x+r.w/2, r.y+r.h/2, '#ffaa33', 8); delete walls[key]; }
+    if (wall.hp <= 0) { const r = wallRect(key); spawnParticles(r.x+r.w/2, r.y+r.h/2, '#ffaa33', 8); delete walls[key]; if (gameMode==='online'&&entity===player) netSend('wall',{t:'destroy',key}); }
   }
 
   for (const t of [...bots, player]) {
@@ -638,7 +767,7 @@ function updateBullets() {
 
       wall.hp -= b.wallDmg;
       spawnParticles(b.x, b.y, '#bb7722', 3);
-      if (wall.hp <= 0) { const r = wallRect(key); spawnParticles(r.x+r.w/2, r.y+r.h/2, '#ffaa33', 7); delete walls[key]; }
+      if (wall.hp <= 0) { const r = wallRect(key); spawnParticles(r.x+r.w/2, r.y+r.h/2, '#ffaa33', 7); delete walls[key]; if (gameMode==='online'&&!b.owner?.isRemote) netSend('wall',{t:'destroy',key}); }
 
       if (!b.pierce) { continue outer; }
       piercedWall = true; // sniper continues but don't double-hit this wall
@@ -649,8 +778,20 @@ function updateBullets() {
     for (const t of [player, ...bots]) {
       if (t === b.owner || t.dead) continue;
       if (dist2(b.x, b.y, t.x, t.y) < (t.radius+br)**2) {
-        if (b.isRocket) createExplosion(b.x, b.y, b.owner);
-        else applyDamage(t, b.playerDmg, b);
+        if (b.isRocket) {
+          // remote rockets: visual explosion only; their client sends hit events
+          if (!b.owner?.isRemote) createExplosion(b.x, b.y, b.owner);
+          else spawnParticles(b.x, b.y, '#ff7700', 15);
+        } else if (gameMode === 'online' && t.isRemote && !b.owner?.isRemote) {
+          // My bullet hit remote player → send hit event
+          netSend('hit', { targetId: t.id, damage: b.playerDmg });
+          spawnParticles(b.x, b.y, '#ff8844', 6);
+        } else if (gameMode === 'online' && b.owner?.isRemote && t === player) {
+          // Remote bullet visually hit me — actual damage comes via hit event
+          spawnParticles(b.x, b.y, '#ff4444', 4);
+        } else {
+          applyDamage(t, b.playerDmg, b);
+        }
         continue outer;
       }
     }
@@ -868,8 +1009,27 @@ function updateSurvival(dt) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // GAME OVER
 // ═══════════════════════════════════════════════════════════════════════════════
+function checkOnlineGameOver() {
+  if (gameOver) return;
+  const enemies = bots.filter(b => b.team !== myTeam);
+  const allies  = bots.filter(b => b.team === myTeam);
+  const iDead   = player.dead || player.hp <= 0;
+  const allTeamDead = iDead && allies.every(a => a.dead || a.hp <= 0);
+  const allEnemyDead = enemies.length > 0 && enemies.every(e => e.dead || e.hp <= 0);
+  if (!allTeamDead && !allEnemyDead) return;
+  gameOver = true; document.exitPointerLock();
+  cleanupOnline();
+  const el = document.getElementById('resultText');
+  el.textContent = allEnemyDead ? 'YOU WIN' : 'YOU LOSE';
+  el.style.color = allEnemyDead ? '#44ff88' : '#ff4444';
+  document.getElementById('resultSub').textContent = '';
+  document.getElementById('result').classList.add('show');
+  if (lobbyChannel) netSend('game_end', { winner: allEnemyDead ? currentUser.id : 'enemy' });
+}
+
 function checkGameOver() {
   if (gameOver) return;
+  if (gameMode === 'online') { checkOnlineGameOver(); return; }
   const playerDead = player.dead || player.hp <= 0;
   const allBotsDead = bots.length === 0 && gameMode === 'vsbot';
   const vsWin = gameMode === 'vsbot' && allBotsDead;
@@ -1160,7 +1320,20 @@ function render() {
 
   // Entities
   drawEntity(player,'#4488ff');
-  for (const b of bots) drawEntity(b,'#ff5533');
+  for (const b of bots) {
+    const col = (gameMode==='online') ? (b.team===myTeam?'#44aaff':'#ff5533') : '#ff5533';
+    drawEntity(b, col);
+    if (gameMode==='online' && b.isRemote && !b.dead && b.username) {
+      ctx.fillStyle='#aaa'; ctx.font='11px monospace'; ctx.textAlign='center';
+      ctx.fillText(b.username, b.x, b.y - b.radius - 20);
+      ctx.textAlign='left';
+    }
+  }
+  if (gameMode==='online' && currentProfile) {
+    ctx.fillStyle='#5599ff'; ctx.font='11px monospace'; ctx.textAlign='center';
+    ctx.fillText(currentProfile.username, player.x, player.y - player.radius - 20);
+    ctx.textAlign='left';
+  }
 
   // Particles
   ctx.save();
@@ -1320,7 +1493,8 @@ function loop(timestamp) {
   if (gameMode !== 'menu' && !paused) {
     if (!gameOver) {
       updatePlayer(scaledDt);
-      for (const b of bots) updateBot(b, scaledDt);
+      if (gameMode === 'online') interpRemote(scaledDt);
+      else for (const b of bots) updateBot(b, scaledDt);
       updateBullets();
       updateWalls(rawDt);  // regen always real-time
       // Particles
@@ -1379,6 +1553,8 @@ function init(mode) {
     spawnBanner('SURVIVAL MODE', '#ff9933', 28, 2500);
   } else if (mode==='freebuild') {
     player.materials = Infinity;
+  } else if (mode==='online') {
+    remotePlayers = {};
   }
 
   document.getElementById('menu').classList.remove('show');
@@ -1388,8 +1564,12 @@ function init(mode) {
 function showMenu() {
   gameMode='menu';
   document.exitPointerLock();
+  cleanupOnline();
   document.getElementById('menu').classList.add('show');
   document.getElementById('result').classList.remove('show');
+  document.getElementById('in-lobby').classList.remove('show');
+  document.getElementById('lobby-screen').classList.remove('show');
+  document.getElementById('auth').classList.remove('show');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1521,6 +1701,411 @@ document.getElementById('btn-defaults').addEventListener('click', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // START
 // ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// MULTIPLAYER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Network send helper ──────────────────────────────────────────────────────
+function netSend(event, payload) {
+  if (!lobbyChannel) return;
+  lobbyChannel.send({ type:'broadcast', event, payload });
+}
+
+// ─── Remote player interpolation ─────────────────────────────────────────────
+function interpRemote(scaledDt) {
+  const t = Math.min(1, 0.22 * scaledDt / FRAME_MS);
+  for (const rp of bots) {
+    if (rp.dead || !rp.targetX) continue;
+    rp.x += (rp.targetX - rp.x) * t;
+    rp.y += (rp.targetY - rp.y) * t;
+  }
+}
+
+// ─── Cleanup ─────────────────────────────────────────────────────────────────
+function cleanupOnline() {
+  if (stateInterval) { clearInterval(stateInterval); stateInterval = null; }
+  if (lobbyChannel)  { sb.removeChannel(lobbyChannel); lobbyChannel = null; }
+  currentLobby = null; remotePlayers = {}; amIReady = false;
+  document.getElementById('online-indicator').classList.remove('show');
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+async function loadProfile() {
+  const { data } = await sb.from('profiles').select().eq('id', currentUser.id).single();
+  currentProfile = data;
+  if (data) document.getElementById('online-username').textContent = data.username;
+  return data;
+}
+
+async function doSignIn() {
+  const email = document.getElementById('auth-email').value.trim();
+  const pass  = document.getElementById('auth-pass').value;
+  setAuthErr('');
+  const { error } = await sb.auth.signInWithPassword({ email, password: pass });
+  if (error) { setAuthErr(error.message); return; }
+  await afterAuth();
+}
+
+async function doSignUp() {
+  const email = document.getElementById('auth-email').value.trim();
+  const pass  = document.getElementById('auth-pass').value;
+  const uname = document.getElementById('auth-user').value.trim().toLowerCase();
+  setAuthErr('');
+  if (uname.length < 3 || uname.length > 16 || !/^[a-z0-9_]+$/.test(uname)) {
+    setAuthErr('Username: 3–16 chars, letters/numbers/underscore'); return;
+  }
+  const { data, error } = await sb.auth.signUp({ email, password: pass });
+  if (error) { setAuthErr(error.message); return; }
+  currentUser = data.user;
+  const { error: pe } = await sb.from('profiles').insert({ id: currentUser.id, username: uname });
+  if (pe) { setAuthErr(pe.message.includes('unique') ? 'Username taken' : pe.message); return; }
+  await afterAuth();
+}
+
+async function afterAuth() {
+  const { data: { user } } = await sb.auth.getUser();
+  currentUser = user;
+  const profile = await loadProfile();
+  if (!profile) { setAuthErr('Profile error — try again'); return; }
+  document.getElementById('auth').classList.remove('show');
+  document.getElementById('lobby-screen').classList.add('show');
+}
+
+function setAuthErr(msg) { document.getElementById('auth-err').textContent = msg; }
+function setLobbyErr(msg){ document.getElementById('lobby-err').textContent = msg; }
+
+// ─── Auth state listener ──────────────────────────────────────────────────────
+sb.auth.onAuthStateChange(async (event, session) => {
+  if (event === 'SIGNED_OUT') { currentUser = null; currentProfile = null; }
+});
+
+// ─── Lobby ────────────────────────────────────────────────────────────────────
+function rndCode() {
+  const ch = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i=0;i<4;i++) s += ch[Math.floor(Math.random()*ch.length)];
+  return s;
+}
+
+async function createLobby() {
+  setLobbyErr('');
+  const code = rndCode();
+  const { data: lobby, error } = await sb.from('lobbies')
+    .insert({ code, mode: lobbyModeSelected, host_id: currentUser.id })
+    .select().single();
+  if (error) { setLobbyErr(error.message); return; }
+  await joinLobbyById(lobby.id, 0);
+}
+
+async function joinByCode() {
+  setLobbyErr('');
+  const code = document.getElementById('join-code-input').value.trim().toUpperCase();
+  if (code.length !== 4) { setLobbyErr('Enter a 4-character code'); return; }
+  const { data: lobby } = await sb.from('lobbies').select().eq('code', code).eq('status','waiting').single();
+  if (!lobby) { setLobbyErr('Lobby not found or already started'); return; }
+  // Determine team: count members per team
+  const { data: members } = await sb.from('lobby_members').select().eq('lobby_id', lobby.id);
+  const maxPlayers = lobby.mode === '2v2' ? 4 : 2;
+  if (members && members.length >= maxPlayers) { setLobbyErr('Lobby is full'); return; }
+  const team1Count = members ? members.filter(m => m.team === 1).length : 0;
+  const team0Count = members ? members.filter(m => m.team === 0).length : 0;
+  const team = team0Count <= team1Count ? 0 : 1;
+  await joinLobbyById(lobby.id, team);
+}
+
+async function joinLobbyById(lobbyId, team) {
+  const { data: lobby } = await sb.from('lobbies').select().eq('id', lobbyId).single();
+  const { error } = await sb.from('lobby_members')
+    .upsert({ lobby_id: lobbyId, player_id: currentUser.id, team, ready: false }, { onConflict: 'lobby_id,player_id' });
+  if (error) { setLobbyErr(error.message); return; }
+  currentLobby = lobby; myTeam = team; amIReady = false;
+  document.getElementById('lobby-screen').classList.remove('show');
+  document.getElementById('lobby-code-disp').textContent = lobby.code;
+  document.getElementById('mode-disp').textContent = lobby.mode.toUpperCase();
+  document.getElementById('in-lobby').classList.add('show');
+  subscribeLobby(lobbyId);
+}
+
+async function leaveLobby() {
+  if (!currentLobby) return;
+  await sb.from('lobby_members').delete().eq('lobby_id', currentLobby.id).eq('player_id', currentUser.id);
+  cleanupOnline();
+  document.getElementById('in-lobby').classList.remove('show');
+  document.getElementById('lobby-screen').classList.add('show');
+}
+
+async function toggleReady() {
+  amIReady = !amIReady;
+  document.getElementById('btn-ready').textContent = amIReady ? 'UNREADY' : 'READY';
+  document.getElementById('btn-ready').style.background = amIReady ? 'rgba(20,80,40,0.9)' : '';
+  await sb.from('lobby_members').update({ ready: amIReady }).eq('lobby_id', currentLobby.id).eq('player_id', currentUser.id);
+  if (lobbyChannel) await lobbyChannel.track({ userId: currentUser.id, username: currentProfile.username, team: myTeam, ready: amIReady });
+}
+
+// ─── Lobby realtime subscription ──────────────────────────────────────────────
+function subscribeLobby(lobbyId) {
+  if (lobbyChannel) sb.removeChannel(lobbyChannel);
+  lobbyChannel = sb.channel(`lobby:${lobbyId}`, { config: { presence: { key: currentUser.id } } });
+
+  lobbyChannel
+    .on('presence', { event: 'sync' }, () => {
+      const state = lobbyChannel.presenceState();
+      renderLobbyPlayers(state);
+      checkAllReady(state);
+    })
+    .on('broadcast', { event: 'game_start' }, ({ payload }) => handleGameStart(payload))
+    .on('broadcast', { event: 'p_state' },   ({ payload }) => handleRemoteState(payload))
+    .on('broadcast', { event: 'wall' },       ({ payload }) => handleWallEvent(payload))
+    .on('broadcast', { event: 'bullet' },     ({ payload }) => handleRemoteBullet(payload))
+    .on('broadcast', { event: 'hit' },        ({ payload }) => handleHitEvent(payload))
+    .on('broadcast', { event: 'game_end' },   ({ payload }) => handleRemoteGameEnd(payload))
+    .subscribe(async status => {
+      if (status === 'SUBSCRIBED')
+        await lobbyChannel.track({ userId: currentUser.id, username: currentProfile.username, team: myTeam, ready: false });
+    });
+}
+
+// ─── Lobby UI ─────────────────────────────────────────────────────────────────
+function renderLobbyPlayers(presence) {
+  const list = document.getElementById('player-list');
+  const mode = currentLobby?.mode || '1v1';
+  const teams = mode === '2v2' ? [0, 1] : [0, 1];
+  const players = Object.values(presence).map(p => p[0] || p);
+  list.innerHTML = '';
+
+  teams.forEach(team => {
+    if (mode === '2v2') {
+      const tl = document.createElement('div');
+      tl.className = 'team-label';
+      tl.textContent = `TEAM ${team === 0 ? 'A' : 'B'}`;
+      list.appendChild(tl);
+    }
+    const slotsNeeded = mode === '2v2' ? 2 : 1;
+    const teamPlayers = players.filter(p => p.team === team);
+    for (let i = 0; i < slotsNeeded; i++) {
+      const row = document.createElement('div'); row.className = 'player-row';
+      if (teamPlayers[i]) {
+        const dot = document.createElement('div');
+        dot.className = 'player-dot';
+        dot.style.background = team === myTeam ? '#4488ff' : '#ff5533';
+        const name = document.createElement('span'); name.className = 'player-name';
+        name.textContent = teamPlayers[i].username + (teamPlayers[i].userId === currentUser.id ? ' (you)' : '');
+        const rdy = document.createElement('span');
+        rdy.className = teamPlayers[i].ready ? 'player-ready' : 'player-wait';
+        rdy.textContent = teamPlayers[i].ready ? '✓ READY' : '...';
+        row.appendChild(dot); row.appendChild(name); row.appendChild(rdy);
+      } else {
+        const dot = document.createElement('div'); dot.className = 'player-dot'; dot.style.background = '#222';
+        const name = document.createElement('span'); name.className = 'player-wait'; name.textContent = 'waiting…';
+        row.appendChild(dot); row.appendChild(name);
+      }
+      list.appendChild(row);
+    }
+  });
+}
+
+function checkAllReady(presence) {
+  const mode = currentLobby?.mode || '1v1';
+  const required = mode === '2v2' ? 4 : 2;
+  const players = Object.values(presence).map(p => p[0] || p);
+  const allReady = players.length >= required && players.every(p => p.ready);
+  if (!allReady) {
+    document.getElementById('lobby-status-msg').textContent =
+      `${players.length}/${required} players${players.length >= required ? ' — waiting for ready' : ''}`;
+    return;
+  }
+  // Host starts the game
+  if (currentLobby && currentUser.id === currentLobby.host_id) {
+    document.getElementById('lobby-status-msg').textContent = 'Starting…';
+    broadcastGameStart(players, mode);
+  }
+}
+
+function broadcastGameStart(players, mode) {
+  const spawnMap = {
+    '1v1': [
+      { team:0, x: CELL*2.5, y: H/2 },
+      { team:1, x: W-CELL*2.5, y: H/2 },
+    ],
+    '2v2': [
+      { team:0, x: CELL*2.5, y: H/3 },
+      { team:0, x: CELL*2.5, y: H*2/3 },
+      { team:1, x: W-CELL*2.5, y: H/3 },
+      { team:1, x: W-CELL*2.5, y: H*2/3 },
+    ],
+  };
+  const slots = spawnMap[mode];
+  let t0 = 0, t1 = 0;
+  const assignments = players.map(p => {
+    const t = p.team;
+    const slot = slots.find(s => s.team === t && slots.filter(s2=>s2.team===t).indexOf(s) === (t===0?t0:t1));
+    if (t===0) t0++; else t1++;
+    const sp = slots.filter(s=>s.team===t)[t===0?t0-1:t1-1] || slots.find(s=>s.team===t);
+    return { userId: p.userId, username: p.username, team: p.team, spawnX: sp.x, spawnY: sp.y };
+  });
+  netSend('game_start', { assignments, mode });
+}
+
+// ─── Game start handler ───────────────────────────────────────────────────────
+function handleGameStart({ assignments, mode }) {
+  document.getElementById('in-lobby').classList.remove('show');
+  const me = assignments.find(a => a.userId === currentUser.id);
+  if (!me) return;
+  myTeam = me.team;
+  init('online');
+  player.x = me.spawnX; player.y = me.spawnY;
+  virtualMouse.x = me.spawnX + (me.team===0?120:-120);
+  virtualMouse.y = me.spawnY;
+
+  // Create remote player entities
+  bots = [];
+  remotePlayers = {};
+  for (const a of assignments) {
+    if (a.userId === currentUser.id) continue;
+    const rp = makeEntity(a.spawnX, a.spawnY, true);
+    rp.id = a.userId; rp.isRemote = true;
+    rp.username = a.username; rp.team = a.team;
+    rp.targetX = a.spawnX; rp.targetY = a.spawnY;
+    bots.push(rp); remotePlayers[a.userId] = rp;
+  }
+
+  // Mark lobby active
+  if (currentLobby && currentUser.id === currentLobby.host_id)
+    sb.from('lobbies').update({ status:'active' }).eq('id', currentLobby.id).then(()=>{});
+
+  stateInterval = setInterval(broadcastMyState, 50);
+  canvas.requestPointerLock();
+
+  const ind = document.getElementById('online-indicator');
+  ind.textContent = `● ONLINE · ${mode}`;
+  ind.classList.add('show');
+}
+
+// ─── State broadcast ──────────────────────────────────────────────────────────
+function broadcastMyState() {
+  if (!lobbyChannel || !player || gameOver) return;
+  netSend('p_state', {
+    userId: currentUser.id,
+    x: player.x, y: player.y,
+    aimAngle: player.aimAngle,
+    hp: player.hp, weapon: player.weapon, dead: player.dead,
+  });
+}
+
+// ─── Incoming handlers ────────────────────────────────────────────────────────
+function handleRemoteState({ userId, x, y, aimAngle, hp, weapon, dead }) {
+  const rp = remotePlayers[userId]; if (!rp) return;
+  rp.targetX = x; rp.targetY = y; rp.aimAngle = aimAngle;
+  rp.hp = Math.max(0, hp); rp.weapon = weapon;
+  if (dead && !rp.dead) {
+    rp.dead = true; rp.hp = 0;
+    spawnParticles(rp.x, rp.y, '#ff5533', 20);
+    spawnParticles(rp.x, rp.y, '#ffcc00', 8);
+    checkOnlineGameOver();
+  }
+}
+
+function handleWallEvent({ t, key, state }) {
+  if (t==='place')   { if (!walls[key]) walls[key] = { hp: WALL_START_HP, state:'full' }; }
+  else if (t==='edit')    { if (walls[key]) walls[key].state = state; }
+  else if (t==='destroy') { if (walls[key]) { const r=wallRect(key); spawnParticles(r.x+r.w/2,r.y+r.h/2,'#ffaa33',5); delete walls[key]; } }
+}
+
+function handleRemoteBullet({ x, y, vx, vy, wallDmg, playerDmg, col, sz, pierce, isRocket, range }) {
+  bullets.push({
+    x, y, prevX:x, prevY:y, vx, vy,
+    owner: { isRemote:true }, life: range,
+    wallDmg, playerDmg: 0, // local damage handled by hit events
+    col, sz, pierce, isRocket,
+  });
+}
+
+function handleHitEvent({ targetId, damage }) {
+  if (targetId !== currentUser.id) return;
+  applyDamage(player, damage, null);
+}
+
+function handleRemoteGameEnd({ winner }) {
+  if (gameOver) return;
+  gameOver = true; document.exitPointerLock(); cleanupOnline();
+  const won = winner === currentUser.id;
+  const el  = document.getElementById('resultText');
+  el.textContent = won ? 'YOU WIN' : 'YOU LOSE';
+  el.style.color = won ? '#44ff88' : '#ff4444';
+  document.getElementById('resultSub').textContent = '';
+  document.getElementById('result').classList.add('show');
+}
+
+// ─── Online button wiring ─────────────────────────────────────────────────────
+document.getElementById('btn-play-online').addEventListener('click', async () => {
+  const { data: { user } } = await sb.auth.getUser();
+  if (user) {
+    currentUser = user;
+    if (!currentProfile) await loadProfile();
+    document.getElementById('menu').classList.remove('show');
+    document.getElementById('lobby-screen').classList.add('show');
+  } else {
+    document.getElementById('menu').classList.remove('show');
+    document.getElementById('auth').classList.add('show');
+  }
+});
+
+// Auth tabs
+document.getElementById('tab-si').addEventListener('click', () => {
+  document.getElementById('tab-si').classList.add('sel');
+  document.getElementById('tab-su').classList.remove('sel');
+  document.getElementById('auth-user').style.display = 'none';
+  document.getElementById('btn-auth-submit').textContent = 'SIGN IN';
+});
+document.getElementById('tab-su').addEventListener('click', () => {
+  document.getElementById('tab-su').classList.add('sel');
+  document.getElementById('tab-si').classList.remove('sel');
+  document.getElementById('auth-user').style.display = '';
+  document.getElementById('btn-auth-submit').textContent = 'CREATE ACCOUNT';
+});
+document.getElementById('btn-auth-submit').addEventListener('click', () => {
+  const isSignUp = document.getElementById('tab-su').classList.contains('sel');
+  if (isSignUp) doSignUp(); else doSignIn();
+});
+document.getElementById('btn-auth-back').addEventListener('click', () => {
+  document.getElementById('auth').classList.remove('show');
+  document.getElementById('menu').classList.add('show');
+});
+
+// Lobby mode buttons
+document.querySelectorAll('[data-m]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('[data-m]').forEach(b => b.classList.remove('sel'));
+    btn.classList.add('sel');
+    lobbyModeSelected = btn.dataset.m;
+  });
+});
+document.getElementById('btn-create-lobby').addEventListener('click', createLobby);
+document.getElementById('btn-join-lobby').addEventListener('click', joinByCode);
+document.getElementById('btn-lobby-back').addEventListener('click', () => {
+  document.getElementById('lobby-screen').classList.remove('show');
+  document.getElementById('menu').classList.add('show');
+});
+
+// In-lobby
+document.getElementById('btn-ready').addEventListener('click', toggleReady);
+document.getElementById('btn-leave-lobby').addEventListener('click', leaveLobby);
+document.querySelector('.code-banner').addEventListener('click', () => {
+  const code = document.getElementById('lobby-code-disp').textContent;
+  navigator.clipboard.writeText(code).catch(()=>{});
+  document.querySelector('.code-banner .label').textContent = 'COPIED!';
+  setTimeout(() => { document.querySelector('.code-banner .label').textContent = 'LOBBY CODE — share with friends'; }, 1500);
+});
+
+// Sign out
+document.getElementById('btn-signout')?.addEventListener('click', async () => {
+  await sb.auth.signOut();
+  cleanupOnline();
+  document.getElementById('lobby-screen').classList.remove('show');
+  document.getElementById('menu').classList.add('show');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 loadKeybinds();
 requestAnimationFrame(loop);
 </script>
