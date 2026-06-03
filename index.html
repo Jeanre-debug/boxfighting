@@ -1848,10 +1848,26 @@ async function doSignIn() {
   const btn = document.getElementById('btn-auth-submit');
   btn.textContent = 'SIGNING IN…'; btn.disabled = true;
   setAuthErr('');
+
+  // Hard timeout — if Supabase hangs, bail after 15s
+  const timer = setTimeout(() => {
+    btn.textContent = 'SIGN IN'; btn.disabled = false;
+    setAuthErr('Connection timed out — check your network and try again.');
+  }, 15000);
+
   try {
-    const { error } = await sb.auth.signInWithPassword({ email, password: pass });
+    const { data, error } = await sb.auth.signInWithPassword({ email, password: pass });
+    clearTimeout(timer);
     if (error) { setAuthErr(error.message); return; }
-    await afterAuth();
+    currentUser = data.user;
+    const profile = await loadProfile();
+    if (profile) {
+      document.getElementById('auth').classList.remove('show');
+      document.getElementById('lobby-screen').classList.add('show');
+    }
+  } catch (e) {
+    clearTimeout(timer);
+    setAuthErr(e.message || 'Something went wrong — try again.');
   } finally {
     btn.textContent = 'SIGN IN'; btn.disabled = false;
   }
