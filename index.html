@@ -1860,11 +1860,12 @@ async function doSignIn() {
     clearTimeout(timer);
     if (error) { setAuthErr(error.message); return; }
     currentUser = data.user;
-    const profile = await loadProfile();
-    if (profile) {
-      document.getElementById('auth').classList.remove('show');
-      document.getElementById('lobby-screen').classList.add('show');
-    }
+    // Pull username directly from JWT metadata — no extra DB call needed
+    const username = data.user.user_metadata?.username || data.user.email.split('@')[0];
+    currentProfile = { id: data.user.id, username };
+    document.getElementById('online-username').textContent = username;
+    document.getElementById('auth').classList.remove('show');
+    document.getElementById('lobby-screen').classList.add('show');
   } catch (e) {
     clearTimeout(timer);
     setAuthErr(e.message || 'Something went wrong — try again.');
@@ -1906,17 +1907,17 @@ async function doSignUp() {
     document.getElementById('auth-err').textContent = 'Account created! Check your email to confirm, then sign in.';
     return;
   }
-  await afterAuth();
+  await afterAuth(data.user);
   } finally {
     btn.textContent = 'CREATE ACCOUNT'; btn.disabled = false;
   }
 }
 
-async function afterAuth() {
-  const { data: { user } } = await sb.auth.getUser();
+async function afterAuth(user) {
   currentUser = user;
-  const profile = await loadProfile();
-  if (!profile) { setAuthErr('Profile error — try again'); return; }
+  const username = user.user_metadata?.username || user.email.split('@')[0];
+  currentProfile = { id: user.id, username };
+  document.getElementById('online-username').textContent = username;
   document.getElementById('auth').classList.remove('show');
   document.getElementById('lobby-screen').classList.add('show');
 }
@@ -1927,12 +1928,7 @@ function setLobbyErr(msg){ document.getElementById('lobby-err').textContent = ms
 // ─── Auth state listener ──────────────────────────────────────────────────────
 sb.auth.onAuthStateChange(async (event, session) => {
   if (event === 'SIGNED_IN' && session && !currentProfile) {
-    currentUser = session.user;
-    const profile = await loadProfile();
-    if (profile) {
-      document.getElementById('auth').classList.remove('show');
-      document.getElementById('lobby-screen').classList.add('show');
-    }
+    await afterAuth(session.user);
   }
   if (event === 'SIGNED_OUT') { currentUser = null; currentProfile = null; }
 });
