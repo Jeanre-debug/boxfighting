@@ -5,136 +5,183 @@
 <title>BOX FIGHT</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
-  background:#0d0d0d; color:#eee; font-family:monospace;
-  display:flex; flex-direction:column; align-items:center;
-  padding:16px; user-select:none;
+  background:#060608;
+  font-family:'Inter',monospace;
+  display:flex; align-items:center; justify-content:center;
+  min-height:100vh; user-select:none; overflow:hidden;
 }
-h1 { font-size:24px; letter-spacing:6px; margin-bottom:12px; color:#fff; text-shadow:0 0 20px #4488ffaa; }
-#wrap { position:relative; }
-canvas { display:block; border:2px solid #2a2a2a; cursor:none; }
+#wrap { position:relative; box-shadow:0 0 80px rgba(68,136,255,0.12), 0 0 200px rgba(0,0,0,0.8); }
+canvas { display:block; border:1px solid #0f0f1a; cursor:none; }
+
+/* ── overlay base ── */
 .overlay {
   position:absolute; top:0; left:0; width:100%; height:100%;
-  background:rgba(0,0,0,0.80); display:none;
-  flex-direction:column; align-items:center; justify-content:center; gap:14px;
+  background:rgba(4,4,12,0.92);
+  display:none; flex-direction:column; align-items:center; justify-content:center; gap:10px;
 }
 .overlay.show { display:flex; }
-.menu-title { font-size:42px; font-weight:bold; letter-spacing:8px; color:#fff; text-shadow:0 0 30px #4488ffaa; }
-.menu-tag { font-size:13px; color:#555; letter-spacing:3px; margin-top:-8px; }
-.menu-sep { width:180px; height:1px; background:#2a2a2a; margin:4px 0; }
-.mode-row { display:flex; gap:10px; align-items:center; }
+
+/* ── main menu ── */
+.menu-title {
+  font-size:56px; font-weight:900; letter-spacing:14px; color:#fff;
+  text-shadow:0 0 40px rgba(68,136,255,0.6), 0 0 100px rgba(68,136,255,0.2);
+  margin-bottom:2px;
+}
+.menu-tag { font-size:11px; color:#2a2a3a; letter-spacing:5px; margin-bottom:10px; }
+.menu-sep { width:220px; height:1px; background:linear-gradient(to right,transparent,#1a1a2e,transparent); margin:6px 0; }
+.mode-row { display:flex; gap:8px; align-items:center; }
 .diff-btn {
-  padding:7px 14px; font-size:12px; font-family:monospace; letter-spacing:1px;
-  cursor:pointer; background:#1a1a1a; color:#555; border:1px solid #333; border-radius:3px;
+  padding:6px 18px; font-size:11px; font-family:'Inter',monospace; letter-spacing:2px; font-weight:600;
+  cursor:pointer; background:transparent; color:#2a2a3a; border:1px solid #111118; border-radius:20px;
   transition:all 0.15s;
 }
-.diff-btn.sel { background:#1a2a4a; color:#88aaff; border-color:#4466aa; }
-.diff-btn:hover { border-color:#666; color:#aaa; }
+.diff-btn.sel { background:rgba(30,50,100,0.8); color:#88aaff; border-color:#2a3a6a; }
+.diff-btn:hover:not(.sel) { color:#555; border-color:#222; }
+
+/* ── game buttons ── */
 .big-btn {
-  width:200px; padding:13px 0; font-size:14px; font-family:monospace; letter-spacing:2px;
-  cursor:pointer; border-radius:4px; border:2px solid; transition:all 0.15s; text-align:center; font-weight:bold;
+  width:250px; padding:13px 0; font-size:12px; font-family:'Inter',monospace;
+  letter-spacing:3px; font-weight:700; cursor:pointer; border-radius:6px;
+  border:1px solid; text-align:center; transition:all 0.18s;
+  position:relative; overflow:hidden; white-space:nowrap;
 }
-.big-btn.blue { background:rgba(20,50,120,0.8); color:#8ab4ff; border-color:#3355aa; }
-.big-btn.blue:hover { background:rgba(40,80,180,0.9); border-color:#6688dd; }
-.big-btn.orange { background:rgba(100,40,10,0.8); color:#ffaa55; border-color:#885522; }
-.big-btn.orange:hover { background:rgba(160,60,15,0.9); border-color:#bb7733; }
-.big-btn.green { background:rgba(15,60,30,0.8); color:#66dd99; border-color:#226644; }
-.big-btn.green:hover { background:rgba(20,90,45,0.9); border-color:#44aa66; }
+.big-btn::after {
+  content:''; position:absolute; inset:0;
+  background:linear-gradient(180deg,rgba(255,255,255,0.06) 0%,transparent 100%);
+  pointer-events:none;
+}
+.big-btn:hover { transform:translateY(-2px); }
+.big-btn:active { transform:translateY(0); }
+
+.big-btn.blue   { background:rgba(20,45,110,0.7);  color:#7aa8f0; border-color:#1e3870; }
+.big-btn.blue:hover   { background:rgba(30,60,150,0.85); border-color:#3a6acc; box-shadow:0 4px 24px rgba(68,136,255,0.25); }
+.big-btn.orange { background:rgba(90,35,8,0.7);    color:#f0a050; border-color:#6a2a10; }
+.big-btn.orange:hover { background:rgba(130,50,12,0.85); border-color:#cc7722; box-shadow:0 4px 24px rgba(220,120,40,0.25); }
+.big-btn.green  { background:rgba(12,55,28,0.7);   color:#55cc88; border-color:#1a4a30; }
+.big-btn.green:hover  { background:rgba(18,80,40,0.85);  border-color:#33aa66; box-shadow:0 4px 24px rgba(50,180,90,0.25); }
+#btn-play-online { background:rgba(50,12,90,0.7); color:#bb77ff; border-color:#3a1068; width:250px; }
+#btn-play-online:hover { background:rgba(70,18,130,0.85); border-color:#8833cc; box-shadow:0 4px 24px rgba(150,60,255,0.25); }
+#btn-settings-menu { background:transparent; color:#222233; border:1px solid #111118; width:250px; font-size:11px; letter-spacing:2px; }
+#btn-settings-menu:hover { color:#444455; border-color:#1a1a2a; }
+
+/* ── small buttons ── */
 .sm-btn {
-  padding:9px 24px; font-size:13px; font-family:monospace; letter-spacing:1px;
-  cursor:pointer; background:#1e1e1e; color:#ccc; border:2px solid #444; border-radius:4px;
-  transition:background 0.15s;
+  padding:8px 22px; font-size:11px; font-family:'Inter',monospace; letter-spacing:2px; font-weight:600;
+  cursor:pointer; background:rgba(12,12,20,0.8); color:#333344;
+  border:1px solid #111118; border-radius:4px; transition:all 0.15s;
 }
-.sm-btn:hover { background:#333; }
+.sm-btn:hover { color:#666677; border-color:#1e1e30; }
 .btn-row { display:flex; gap:10px; }
-#resultText { font-size:44px; font-weight:bold; letter-spacing:4px; text-shadow:0 0 28px currentColor; }
-#resultSub { font-size:14px; color:#888; letter-spacing:1px; }
-#legend { margin-top:10px; font-size:11px; color:#555; line-height:2; text-align:center; }
-#legend span { color:#888; }
-/* ── auth / lobby ── */
+
+/* ── result screen ── */
+#resultText { font-size:54px; font-weight:900; letter-spacing:6px; text-shadow:0 0 40px currentColor; }
+#resultSub { font-size:12px; color:#333344; letter-spacing:3px; }
+
+/* ── pause screen ── */
+#pause .pause-title { font-size:48px; font-weight:900; letter-spacing:10px; color:#fff; opacity:0.9; }
+#pause .pause-sub   { font-size:10px; color:#222233; letter-spacing:4px; }
+
+/* ── cards (auth / lobby / in-lobby) ── */
 .auth-box, .lobby-box, .in-lobby-box {
-  background:#111; border:1px solid #2a2a2a; border-radius:6px;
-  padding:32px 40px; width:340px;
-  display:flex; flex-direction:column; gap:10px;
+  background:rgba(6,6,14,0.97);
+  border:1px solid #0f0f1e;
+  border-radius:12px;
+  padding:32px 36px;
+  width:380px;
+  display:flex; flex-direction:column; gap:12px;
+  box-shadow:0 0 0 1px rgba(255,255,255,0.03) inset, 0 20px 60px rgba(0,0,0,0.6);
 }
-.auth-title { font-size:22px; letter-spacing:5px; color:#fff; text-align:center; margin-bottom:4px; }
-.auth-tabs { display:flex; gap:0; }
+
+/* auth */
+.auth-title { font-size:22px; font-weight:900; letter-spacing:8px; color:#fff; text-align:center; margin-bottom:4px; text-shadow:0 0 20px rgba(68,136,255,0.5); }
+.auth-tabs { display:flex; border:1px solid #111118; border-radius:5px; overflow:hidden; }
 .auth-tab {
-  flex:1; padding:8px 0; font-size:12px; font-family:monospace; letter-spacing:1px;
-  cursor:pointer; background:#1a1a1a; color:#555; border:1px solid #333;
-  transition:all 0.12s;
+  flex:1; padding:9px 0; font-size:11px; font-family:'Inter',monospace; letter-spacing:2px; font-weight:600;
+  cursor:pointer; background:transparent; color:#222233; border:none; transition:all 0.12s;
 }
-.auth-tab:first-child { border-radius:3px 0 0 3px; }
-.auth-tab:last-child  { border-radius:0 3px 3px 0; }
-.auth-tab.sel { background:#1a2a4a; color:#88aaff; border-color:#4466aa; }
+.auth-tab.sel { background:rgba(25,40,90,0.9); color:#88aaff; }
+.auth-tab:hover:not(.sel) { color:#444; }
 .field {
-  padding:9px 12px; font-size:13px; font-family:monospace;
-  background:#0d0d0d; color:#eee; border:1px solid #2a2a2a; border-radius:3px; outline:none;
-  transition:border-color 0.12s;
+  padding:11px 14px; font-size:13px; font-family:'Inter',monospace;
+  background:rgba(10,10,20,0.9); color:#ccc;
+  border:1px solid #111118; border-radius:6px; outline:none;
+  transition:border-color 0.15s, box-shadow 0.15s;
 }
-.field:focus { border-color:#4466aa; }
-.field::placeholder { color:#444; }
-.err-msg { font-size:11px; color:#ff5544; text-align:center; min-height:14px; }
-.ok-msg  { font-size:11px; color:#44cc77; text-align:center; min-height:14px; }
+.field:focus { border-color:#2a3a6a; box-shadow:0 0 0 3px rgba(68,100,200,0.1); }
+.field::placeholder { color:#1a1a2a; }
+.err-msg { font-size:11px; color:#ee4433; text-align:center; min-height:16px; letter-spacing:0.5px; }
+.ok-msg  { font-size:11px; color:#33bb66; text-align:center; min-height:16px; }
+
+/* lobby screen */
 .lobby-header { display:flex; justify-content:space-between; align-items:center; }
-.lobby-title  { font-size:14px; color:#888; letter-spacing:2px; }
-.lobby-user   { font-size:13px; color:#fff; font-weight:bold; }
-.mode-pick { display:flex; gap:6px; }
+.lobby-title  { font-size:10px; color:#1a1a2a; letter-spacing:4px; font-weight:600; }
+.lobby-user   { font-size:13px; color:#7aa8f0; font-weight:700; }
+.mode-pick { display:flex; gap:8px; }
 .join-row  { display:flex; gap:8px; }
-.join-row input { flex:1; }
+.join-row input { flex:1; text-transform:uppercase; letter-spacing:8px; font-size:20px; text-align:center; font-weight:700; }
+
+/* in-lobby */
 .code-banner {
-  text-align:center; padding:14px; background:#0d1a2a; border:1px solid #225588;
-  border-radius:4px;
+  text-align:center; padding:18px 14px;
+  background:rgba(10,20,50,0.6);
+  border:1px solid #0f1e3a;
+  border-radius:8px; cursor:pointer; transition:border-color 0.15s;
 }
-.code-banner .code { font-size:32px; letter-spacing:8px; color:#88ccff; font-weight:bold; }
-.code-banner .label { font-size:10px; color:#446688; letter-spacing:2px; margin-bottom:4px; }
-.player-list { display:flex; flex-direction:column; gap:6px; min-height:80px; }
-.team-label  { font-size:10px; color:#445566; letter-spacing:2px; margin-top:4px; }
-.player-row  { display:flex; align-items:center; gap:8px; padding:6px 10px; background:#0d0d0d; border-radius:3px; }
+.code-banner:hover { border-color:#1a3060; }
+.code-banner .code { font-size:40px; letter-spacing:14px; color:#6699dd; font-weight:900; text-shadow:0 0 30px rgba(68,136,255,0.4); }
+.code-banner .label { font-size:9px; color:#1a2a3a; letter-spacing:3px; margin-bottom:6px; font-weight:600; }
+.player-list { display:flex; flex-direction:column; gap:7px; min-height:90px; }
+.team-label  { font-size:9px; color:#1a1a2a; letter-spacing:4px; margin-top:6px; font-weight:700; }
+.player-row  { display:flex; align-items:center; gap:10px; padding:9px 12px; background:rgba(10,10,20,0.7); border:1px solid #0d0d1a; border-radius:5px; }
 .player-dot  { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
-.player-name { flex:1; font-size:12px; color:#ccc; }
-.player-ready{ font-size:10px; color:#44cc77; letter-spacing:1px; }
-.player-wait { font-size:10px; color:#334455; letter-spacing:1px; }
-.lobby-status-msg { font-size:12px; color:#667788; text-align:center; }
-#online-indicator {
-  position:fixed; top:10px; right:10px; font-size:11px; font-family:monospace;
-  background:rgba(0,0,0,0.6); padding:4px 10px; border-radius:3px; z-index:100;
-  display:none;
-}
-#online-indicator.show { display:block; }
-/* ── settings ── */
+.player-name { flex:1; font-size:12px; color:#aaa; font-weight:500; }
+.player-ready{ font-size:10px; color:#33bb66; letter-spacing:2px; font-weight:600; }
+.player-wait { font-size:10px; color:#1a1a2a; letter-spacing:1px; }
+.lobby-status-msg { font-size:11px; color:#222233; text-align:center; letter-spacing:1px; }
+
+/* settings */
 #settings { overflow-y:auto; }
 .settings-box {
-  background:#111; border:1px solid #2a2a2a; border-radius:6px;
+  background:rgba(6,6,14,0.98); border:1px solid #0f0f1e; border-radius:12px;
   padding:28px 36px; width:400px; max-height:88vh; overflow-y:auto;
   display:flex; flex-direction:column; gap:6px;
+  box-shadow:0 20px 60px rgba(0,0,0,0.6);
 }
-.settings-title { font-size:20px; letter-spacing:4px; color:#fff; text-align:center; margin-bottom:8px; }
-.bind-group { font-size:10px; color:#444; letter-spacing:3px; margin:10px 0 4px; border-top:1px solid #222; padding-top:8px; }
-.bind-row { display:flex; align-items:center; justify-content:space-between; padding:3px 0; }
-.bind-label { font-size:12px; color:#999; }
+.settings-title { font-size:16px; letter-spacing:6px; color:#fff; text-align:center; font-weight:700; margin-bottom:8px; }
+.bind-group { font-size:9px; color:#1a1a2a; letter-spacing:4px; font-weight:700; margin:10px 0 4px; border-top:1px solid #0d0d1a; padding-top:8px; }
+.bind-row { display:flex; align-items:center; justify-content:space-between; padding:4px 0; }
+.bind-label { font-size:12px; color:#333344; }
 .bind-key {
-  min-width:80px; padding:4px 10px; font-size:11px; font-family:monospace; letter-spacing:1px;
-  cursor:pointer; background:#1a1a1a; color:#ccc; border:1px solid #333; border-radius:3px;
-  text-align:center; transition:all 0.12s;
+  min-width:84px; padding:5px 10px; font-size:11px; font-family:'Inter',monospace; letter-spacing:1px; font-weight:600;
+  cursor:pointer; background:rgba(10,10,20,0.9); color:#444455;
+  border:1px solid #111118; border-radius:4px; text-align:center; transition:all 0.12s;
 }
-.bind-key:hover { border-color:#555; color:#fff; }
-.bind-key.listening { background:#332200; color:#ffcc44; border-color:#aa7700; animation:pulse 0.7s infinite alternate; }
-@keyframes pulse { from { opacity:0.7; } to { opacity:1; } }
-.settings-footer { display:flex; justify-content:space-between; margin-top:14px; gap:10px; }
+.bind-key:hover { border-color:#1e1e2e; color:#778; }
+.bind-key.listening { background:rgba(30,18,0,0.9); color:#ddaa33; border-color:#3a2800; animation:pulse 0.7s infinite alternate; }
+@keyframes pulse { from{opacity:0.65} to{opacity:1} }
+.settings-footer { display:flex; gap:10px; margin-top:14px; }
 .settings-footer button {
-  flex:1; padding:8px 0; font-size:12px; font-family:monospace; letter-spacing:1px;
-  cursor:pointer; border-radius:3px; border:1px solid #333; transition:background 0.12s;
+  flex:1; padding:9px 0; font-size:11px; font-family:'Inter',monospace; letter-spacing:2px; font-weight:600;
+  cursor:pointer; border-radius:4px; border:1px solid #111118; background:transparent; transition:all 0.12s;
 }
-#btn-defaults { background:#1a1a1a; color:#888; }
-#btn-defaults:hover { background:#2a1a1a; color:#cc6644; border-color:#663322; }
-#btn-settings-back { background:#1a2a1a; color:#88cc88; border-color:#336633; }
-#btn-settings-back:hover { background:#223322; }
+#btn-defaults { color:#222233; }
+#btn-defaults:hover { color:#cc5533; border-color:#2a1010; }
+#btn-settings-back { color:#1a3a1a; border-color:#0d1a0d; }
+#btn-settings-back:hover { color:#44aa66; border-color:#1a3a1a; }
+
+/* online indicator */
+#online-indicator {
+  position:fixed; top:12px; right:12px; font-size:10px; font-family:'Inter',monospace; font-weight:600;
+  background:rgba(4,14,8,0.9); color:#33bb66; padding:5px 14px;
+  border:1px solid #0d2a14; border-radius:20px; letter-spacing:2px; z-index:100; display:none;
+}
+#online-indicator.show { display:block; }
 </style>
 </head>
 <body>
-<h1>BOX FIGHT</h1>
 <div id="wrap">
   <canvas id="c" width="1080" height="792"></canvas>
 
@@ -213,9 +260,9 @@ canvas { display:block; border:2px solid #2a2a2a; cursor:none; }
   <div id="online-indicator"></div>
 
   <div id="pause" class="overlay">
-    <div style="font-size:40px;font-weight:bold;letter-spacing:6px;color:#fff;text-shadow:0 0 24px rgba(255,255,255,0.35)">PAUSED</div>
-    <div style="font-size:13px;color:#555;letter-spacing:3px;margin-top:-4px">CLICK TO RESUME</div>
-    <button class="sm-btn" id="btn-settings-pause" style="margin-top:6px">SETTINGS / KEYBINDS</button>
+    <div class="pause-title">PAUSED</div>
+    <div class="pause-sub">CLICK TO RESUME</div>
+    <button class="sm-btn" id="btn-settings-pause" style="margin-top:10px;letter-spacing:3px">KEYBINDS</button>
   </div>
 
   <div id="settings" class="overlay">
@@ -237,11 +284,6 @@ canvas { display:block; border:2px solid #2a2a2a; cursor:none; }
       <button class="sm-btn" id="btn-menu">MENU</button>
     </div>
   </div>
-</div>
-<div id="legend">
-  <span>WASD</span> Move &nbsp;·&nbsp; <span>Mouse</span> Aim &nbsp;·&nbsp; <span>LMB</span> Shoot / Swing &nbsp;·&nbsp; <span>RMB</span> Build
-  &nbsp;·&nbsp; <span>SPACE</span> Dash &nbsp;·&nbsp; <span>1–6</span> / <span>Scroll</span> Weapon
-  &nbsp;·&nbsp; <span>E</span> Edit &nbsp;·&nbsp; <span>F</span> Reset &nbsp;·&nbsp; <span>C</span> Clear <em>(free build)</em>
 </div>
 
 <script>
