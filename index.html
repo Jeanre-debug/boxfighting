@@ -1756,7 +1756,7 @@ function init(mode) {
   bots   = [];
 
   if (mode==='vsbot') {
-    const diff = botDifficulty;
+    const diff = BOT_DIFF[botDifficulty] ? botDifficulty : 'easy';
     const b = makeEntity(W-CELL*2.5, H/2, true, diff);
     b.aimAngle = Math.PI;
     b.shield = diff==='hard' ? 100 : diff==='medium' ? 50 : 0;
@@ -1878,9 +1878,9 @@ canvas.addEventListener('wheel', e => {
 },{passive:false});
 
 // Difficulty buttons
-document.querySelectorAll('.diff-btn').forEach(btn => {
+document.querySelectorAll('[data-d]').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.diff-btn').forEach(b=>b.classList.remove('sel'));
+    document.querySelectorAll('[data-d]').forEach(b=>b.classList.remove('sel'));
     btn.classList.add('sel');
     botDifficulty=btn.dataset.d;
   });
