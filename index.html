@@ -346,52 +346,30 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
   </div>
 </div>
 
-<script>
+<script type="module">
 'use strict';
+// ─── Shared simulation modules (also run on the authoritative server) ─────────
+import {
+  CELL, COLS, ROWS, W, H, WALL_THICK, WALL_HP, WALL_START_HP, WALL_REGEN,
+  P_RADIUS, P_SPEED, BOT_BASE_SPEED, BULLET_SPEED, MAT_MAX, MAT_COST, MAT_REGEN,
+  BUILD_CD, SUB_STEPS, WIN_FRAC, FRAME_MS, DASH_DUR, DASH_CD, DASH_SPD,
+  EXPL_RADIUS, COMBO_RESET, SHIELD_MAX, MINI_SHIELD_CAP, MINI_AMOUNT,
+  BIG_POT_AMOUNT, MINI_USE_MS, BIG_USE_MS, PLAYER_MINIS, PLAYER_BIGPOTS,
+  WEAPON_ORDER, WEAPONS, BOT_DIFF, COMBO_LABELS,
+} from './shared/constants.js';
+import {
+  edgeKey, keyMeta, wallRect, wallSegs, hashKey,
+  closestPt, circleHitsRect, resolveRect, resolveWalls as resolveWallsPure,
+  clampArena, wrapAngle, dist2,
+} from './shared/geometry.js';
+
+// Client wrapper: resolve against the global `walls` table.
+function resolveWalls(e) { resolveWallsPure(e, walls); }
+
 // ─── Supabase ─────────────────────────────────────────────────────────────────
 const SB_URL  = 'https://dlaimuznwcpzcttwahdg.supabase.co';
 const SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRsYWltdXpud2NwemN0dHdhaGRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0ODQ1MDUsImV4cCI6MjA5NjA2MDUwNX0.rYIneNjm8SqHjXpB_IHGtkJ4R3lOkpzJsPKI09vTdpA';
 const sb = supabase.createClient(SB_URL, SB_ANON);
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CONSTANTS
-// ═══════════════════════════════════════════════════════════════════════════════
-const CELL         = 72, COLS = 15, ROWS = 11;
-const W            = COLS * CELL, H = ROWS * CELL;
-const WALL_THICK   = 12, WALL_HP = 100, WALL_START_HP = 35, WALL_REGEN = 10;
-const P_RADIUS     = 12, P_SPEED = 2.1, BOT_BASE_SPEED = 1.7;
-const BULLET_SPEED = 8;
-const MAT_MAX = 300, MAT_COST = 10, MAT_REGEN = 0.06;
-const BUILD_CD     = 140;
-const SUB_STEPS    = 4, WIN_FRAC = 0.25;
-const FRAME_MS     = 1000 / 60;
-const DASH_DUR     = 200, DASH_CD = 3000, DASH_SPD = 16;
-const EXPL_RADIUS  = 90;
-const COMBO_RESET  = 2400;
-const SHIELD_MAX      = 150;
-const MINI_SHIELD_CAP = 50;
-const MINI_AMOUNT     = 25;
-const BIG_POT_AMOUNT  = 50;
-const MINI_USE_MS     = 2000;
-const BIG_USE_MS      = 4000;
-const PLAYER_MINIS    = 3;
-const PLAYER_BIGPOTS  = 1;
-
-const WEAPON_ORDER = ['ar','smg','shotgun','sniper','rocket','pickaxe'];
-const WEAPONS = {
-  ar:      { name:'AR',      cd:140,  wallDmg:18, playerDmg:12, range:140, spread:0.03, pellets:1, magSize:30, reloadTime:1800, bLen:13, bW:2,  col:'#ffe944', sz:3 },
-  smg:     { name:'SMG',     cd:80,   wallDmg:7,  playerDmg:6,  range:60,  spread:0.11, pellets:1, magSize:25, reloadTime:1300, bLen:9,  bW:2,  col:'#88ffcc', sz:2 },
-  shotgun: { name:'SHOTGUN', cd:700,  wallDmg:8,  playerDmg:7,  range:28,  spread:0.38, pellets:8, magSize:8,  reloadTime:2200, bLen:7,  bW:5,  col:'#ff9933', sz:2 },
-  sniper:  { name:'SNIPER',  cd:1100, wallDmg:22, playerDmg:50, range:500, spread:0,    pellets:1, magSize:5,  reloadTime:2800, bLen:22, bW:1,  col:'#00eeff', sz:5, pierce:true },
-  rocket:  { name:'ROCKET',  cd:1400, wallDmg:0,  playerDmg:0,  range:260, spread:0,    pellets:1, magSize:2,  reloadTime:3500, bLen:15, bW:7,  col:'#ff5500', sz:7, isRocket:true },
-  pickaxe: { name:'PICKAXE', cd:650,  wallDmg:40, playerDmg:15, range:0,   spread:0,    pellets:0, magSize:Infinity, reloadTime:0, bLen:0, bW:0, col:'#f0c83c', sz:0, reach:46, arc:Math.PI/5, swingDur:280 },
-};
-const BOT_DIFF = {
-  easy:   { spd:0.65, fireMult:1.9, aimSpread:0.26, edits:false, peeks:false, idealDist:150, weps:['ar'] },
-  medium: { spd:1.0,  fireMult:1.0, aimSpread:0.09, edits:false, peeks:false, idealDist:130, weps:['ar','smg'] },
-  hard:   { spd:1.3,  fireMult:0.7, aimSpread:0.02, edits:true,  peeks:true,  idealDist:110, weps:['shotgun','smg'] },
-};
-const COMBO_LABELS = ['','','DOUBLE!','TRIPLE!','QUAD!','PENTA!','RAMPAGE!'];
 
 // ─── Keybinds ────────────────────────────────────────────────────────────────
 const DEFAULT_BINDS = {
@@ -421,34 +399,6 @@ const BIND_DEFS = [
 let keybinds = { ...DEFAULT_BINDS };
 let listeningFor = null;   // action key being rebound
 let settingsFrom = 'menu'; // 'menu' | 'pause' — where to return
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CANONICAL EDGE KEYS
-// ═══════════════════════════════════════════════════════════════════════════════
-const edgeKey = (cx, cy, side) =>
-  side === 'N' ? `h,${cx},${cy}` : side === 'S' ? `h,${cx},${cy+1}` :
-  side === 'W' ? `v,${cx},${cy}` : `v,${cx+1},${cy}`;
-
-function keyMeta(key) { const p = key.split(','); return { type:p[0], a:+p[1], b:+p[2] }; }
-
-function wallRect(key) {
-  const { type, a, b } = keyMeta(key), half = WALL_THICK / 2;
-  return type === 'h'
-    ? { x:a*CELL, y:b*CELL-half, w:CELL, h:WALL_THICK }
-    : { x:a*CELL-half, y:b*CELL, w:WALL_THICK, h:CELL };
-}
-function wallSegs(key, wall) {
-  if (wall.state === 'full') return [wallRect(key)];
-  const { type, a, b } = keyMeta(key), half = WALL_THICK/2, frac = CELL*WIN_FRAC;
-  return type === 'h'
-    ? [{ x:a*CELL, y:b*CELL-half, w:frac, h:WALL_THICK }, { x:a*CELL+CELL-frac, y:b*CELL-half, w:frac, h:WALL_THICK }]
-    : [{ x:a*CELL-half, y:b*CELL, w:WALL_THICK, h:frac }, { x:a*CELL-half, y:b*CELL+CELL-frac, w:WALL_THICK, h:frac }];
-}
-function hashKey(key) {
-  let h = 5381;
-  for (let i = 0; i < key.length; i++) h = ((h << 5) + h + key.charCodeAt(i)) & 0x7fffffff;
-  return h;
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STATE
@@ -508,43 +458,6 @@ function makeEntity(x, y, isBot, difficulty) {
     peekState: 'idle', peekKey: null, peekTimer: 0,
   };
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// GEOMETRY
-// ═══════════════════════════════════════════════════════════════════════════════
-const closestPt = (px, py, rx, ry, rw, rh) => ({
-  x: Math.max(rx, Math.min(px, rx+rw)),
-  y: Math.max(ry, Math.min(py, ry+rh)),
-});
-function circleHitsRect(px, py, r, rx, ry, rw, rh) {
-  const cp = closestPt(px, py, rx, ry, rw, rh);
-  const dx = px-cp.x, dy = py-cp.y;
-  return dx*dx + dy*dy < r*r;
-}
-function resolveRect(e, rx, ry, rw, rh) {
-  if (!circleHitsRect(e.x, e.y, e.radius, rx, ry, rw, rh)) return;
-  const cp = closestPt(e.x, e.y, rx, ry, rw, rh);
-  const dx = e.x-cp.x, dy = e.y-cp.y;
-  const dist = Math.sqrt(dx*dx+dy*dy) || 0.001;
-  const pen  = e.radius - dist;
-  e.x += (dx/dist)*pen; e.y += (dy/dist)*pen;
-}
-function resolveWalls(e) {
-  for (const [key, wall] of Object.entries(walls))
-    for (const seg of wallSegs(key, wall))
-      resolveRect(e, seg.x, seg.y, seg.w, seg.h);
-}
-function clampArena(e) {
-  const r = e.radius;
-  e.x = Math.max(r, Math.min(W-r, e.x));
-  e.y = Math.max(r, Math.min(H-r, e.y));
-}
-function wrapAngle(a) {
-  while (a > Math.PI)  a -= Math.PI*2;
-  while (a < -Math.PI) a += Math.PI*2;
-  return a;
-}
-function dist2(ax, ay, bx, by) { return (ax-bx)**2 + (ay-by)**2; }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SCREEN EFFECTS

@@ -1,0 +1,10 @@
+{
+  "name": "boxfight",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Box Fight — 2D top-down build-fight arena shooter",
+  "scripts": {
+    "server": "node server/index.js"
+  }
+}
