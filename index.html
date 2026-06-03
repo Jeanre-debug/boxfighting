@@ -315,10 +315,13 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
 
   <div id="online-indicator"></div>
 
-  <div id="pause" class="overlay">
+  <div id="pause" class="overlay" style="flex-direction:column;gap:12px">
     <div class="pause-title">PAUSED</div>
     <div class="pause-sub">CLICK TO RESUME</div>
-    <button class="sm-btn" id="btn-settings-pause" style="margin-top:10px;letter-spacing:3px">KEYBINDS</button>
+    <div style="display:flex;gap:10px;margin-top:8px">
+      <button class="sm-btn" id="btn-settings-pause">KEYBINDS</button>
+      <button class="sm-btn" id="btn-exit-game" style="color:#f87171;border-color:#3a1010">EXIT GAME</button>
+    </div>
   </div>
 
   <div id="settings" class="overlay">
@@ -1791,6 +1794,7 @@ document.addEventListener('pointerlockchange', () => {
 
 document.getElementById('btn-settings-menu').addEventListener('click',  () => openSettings('menu'));
 document.getElementById('btn-settings-pause').addEventListener('click', () => { document.getElementById('pause').classList.remove('show'); openSettings('pause'); });
+document.getElementById('btn-exit-game').addEventListener('click', () => { document.getElementById('pause').classList.remove('show'); showMenu(); });
 document.getElementById('btn-settings-back').addEventListener('click',  closeSettings);
 document.getElementById('btn-defaults').addEventListener('click', () => {
   keybinds = { ...DEFAULT_BINDS }; saveKeybinds(); listeningFor = null; renderSettingsUI();
@@ -2241,15 +2245,25 @@ async function enterMatchedLobby(lobbyId) {
 
 // ─── Online button wiring ─────────────────────────────────────────────────────
 document.getElementById('btn-play-online').addEventListener('click', async () => {
-  const { data: { user } } = await sb.auth.getUser();
-  if (user) {
-    currentUser = user;
-    if (!currentProfile) await loadProfile();
+  try {
+    const { data: { user } } = await sb.auth.getUser();
     document.getElementById('menu').classList.remove('show');
-    document.getElementById('lobby-screen').classList.add('show');
-  } else {
+    if (user) {
+      currentUser = user;
+      if (!currentProfile) await loadProfile();
+      if (currentProfile) {
+        document.getElementById('lobby-screen').classList.add('show');
+      } else {
+        document.getElementById('auth').classList.add('show');
+      }
+    } else {
+      document.getElementById('auth').classList.add('show');
+    }
+  } catch (e) {
+    // Supabase unreachable — show auth anyway so user sees an error path
     document.getElementById('menu').classList.remove('show');
     document.getElementById('auth').classList.add('show');
+    document.getElementById('auth-err').textContent = 'Connection error — check your network.';
   }
 });
 
