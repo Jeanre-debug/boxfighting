@@ -362,6 +362,7 @@ import {
   closestPt, circleHitsRect, resolveRect, resolveWalls as resolveWallsPure,
   clampArena, wrapAngle, dist2,
 } from './shared/geometry.js';
+import { createState, addPlayer, removePlayer, step as simStep } from './shared/sim.js';
 
 // Client wrapper: resolve against the global `walls` table.
 function resolveWalls(e) { resolveWallsPure(e, walls); }
@@ -434,6 +435,16 @@ let wave = 0, waveState = 'active';   // 'active' | 'between'
 let waveTimer = 0;
 let storm = { cx: W/2, cy: H/2, radius: 9999 };
 let bannerText = null;  // { text, color, life, maxLife, size }
+
+// ─── Shared-sim driver (offline modes: vsbot / survival / freebuild) ──────────
+// These modes now run the authoritative shared/sim.js step; the client only
+// gathers input, renders simState, and turns events into juice. Online stays on
+// its legacy path until the dedicated server replaces it (P2–P3).
+let simState = null;
+const MY_ID = 'me';
+let selectedWeapon = 'ar';
+let pendingInput = { dash:false, edit:false, reset:false, reload:false, mini:false, bigpot:false };
+const isSimMode = () => gameMode === 'vsbot' || gameMode === 'survival' || gameMode === 'freebuild';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENTITY FACTORY
@@ -1051,17 +1062,19 @@ function randomEdgeSpawn() {
 function spawnWave(n) {
   waveState = 'active';
   const count = Math.min(1+Math.floor(n/2), 5);
-  bots = [];
+  const me = simState.players[MY_ID];
   for (let i = 0; i < count; i++) {
     const diff = n<=2?'easy': n<=5?'medium':'hard';
     const pos  = randomEdgeSpawn();
-    const b    = makeEntity(pos.x, pos.y, true, diff);
-    b.shield   = diff==='hard' ? 75 : diff==='medium' ? 40 : 0;
     const weps = BOT_DIFF[diff].weps;
-    b.weapon   = weps[Math.floor(Math.random()*weps.length)];
-    b.aimAngle = Math.atan2(player.y-b.y, player.x-b.x);
-    bots.push(b);
+    const b = addPlayer(simState, 'bot'+n+'_'+i, {
+      x: pos.x, y: pos.y, team: 1, isBot: true, difficulty: diff,
+      weapon: weps[Math.floor(Math.random()*weps.length)],
+    });
+    b.shield   = diff==='hard' ? 75 : diff==='medium' ? 40 : 0;
+    b.aimAngle = Math.atan2(me.y-b.y, me.x-b.x);
   }
+  syncSimGlobals();
   // Storm shrinks each wave
   storm.radius = Math.max(CELL*4, W*0.9 - n*38);
   if (n > 1) spawnBanner(`WAVE ${n}`, '#ff9933', 30, 2200);
@@ -1069,14 +1082,15 @@ function spawnWave(n) {
 
 function checkWaveClear() {
   if (waveState !== 'active') return;
-  if (bots.length > 0) return;
+  const enemies = Object.values(simState.players).filter(p => p.id !== MY_ID && !p.dead);
+  if (enemies.length > 0) return;
   waveState = 'between';
   waveTimer = 4500;
-  // Heal + mats
-  player.hp = Math.min(100, player.hp + 30);
-  player.materials = Math.min(MAT_MAX, player.materials + 80);
-  spawnFloat(player.x, player.y-45, '+30 HP', '#44ff88', 15);
-  spawnFloat(player.x, player.y-62, '+80 MATS', '#88aaff', 14);
+  const me = simState.players[MY_ID];
+  me.hp = Math.min(100, me.hp + 30);
+  me.materials = Math.min(MAT_MAX, me.materials + 80);
+  spawnFloat(me.x, me.y-45, '+30 HP', '#44ff88', 15);
+  spawnFloat(me.x, me.y-62, '+80 MATS', '#88aaff', 14);
   spawnBanner(`WAVE ${wave} CLEARED`, '#44ff88', 28, 2500);
 }
 
@@ -1212,10 +1226,11 @@ function drawEntity(e, bodyColor) {
   if (e.dead || e.hp <= 0) return;
   const now = performance.now();
 
-  // Dash ring (player only)
+  // Dash ring (player only) — dashReadyAt (sim) or dashCd (legacy online)
   if (!e.isBot) {
-    const dashPct = Math.max(0, Math.min(1, (now - (e.dashCd - DASH_CD)) / DASH_CD));
-    const ready   = now >= e.dashCd;
+    const readyAt = e.dashReadyAt ?? e.dashCd ?? 0;
+    const dashPct = Math.max(0, Math.min(1, (now - (readyAt - DASH_CD)) / DASH_CD));
+    const ready   = now >= readyAt;
     ctx.beginPath();
     ctx.arc(e.x, e.y, e.radius+6, -Math.PI/2, -Math.PI/2 + Math.PI*2*dashPct);
     ctx.strokeStyle = ready ? 'rgba(100,220,255,0.9)' : 'rgba(60,100,180,0.5)';
@@ -1255,12 +1270,20 @@ function drawEntity(e, bodyColor) {
     ctx.stroke();
   }
 
-  // Potion-drinking ring (player only)
-  if (!e.isBot && usingPotion) {
-    const p = Math.min(1, (now - usingPotion.startTime) / usingPotion.duration);
+  // Potion-drinking ring (player only) — sim uses per-player potionEnd; legacy online uses global usingPotion
+  let potP = 0, potType = null;
+  if (e.potionEnd) {
+    potType = e.potionType;
+    const dur = potType === 'mini' ? MINI_USE_MS : BIG_USE_MS;
+    potP = 1 - (e.potionEnd - now) / dur;
+  } else if (e === player && usingPotion) {
+    potType = usingPotion.type;
+    potP = (now - usingPotion.startTime) / usingPotion.duration;
+  }
+  if (!e.isBot && potType) {
     ctx.beginPath();
-    ctx.arc(e.x, e.y, e.radius+11, -Math.PI/2, -Math.PI/2 + Math.PI*2*p);
-    ctx.strokeStyle = usingPotion.type === 'mini' ? '#88ccff' : '#bb88ff';
+    ctx.arc(e.x, e.y, e.radius+11, -Math.PI/2, -Math.PI/2 + Math.PI*2*Math.min(1, potP));
+    ctx.strokeStyle = potType === 'mini' ? '#88ccff' : '#bb88ff';
     ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.stroke();
   }
 
@@ -1528,7 +1551,7 @@ function render() {
   ctx.fillStyle='#bb88ff'; ctx.fillText(`◍ ${player.bigPots}`, hudX+104, 60);
 
   // Dash pip
-  const dashReady = performance.now() >= player.dashCd;
+  const dashReady = performance.now() >= (player.dashReadyAt ?? player.dashCd ?? 0);
   ctx.fillStyle = dashReady ? '#44ccff' : '#2a3a4a';
   ctx.beginPath(); ctx.arc(hudX+5, 74, 4, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle=dashReady?'#aaeeff':'#445566'; ctx.font='9px monospace';
@@ -1591,6 +1614,143 @@ function render() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN LOOP
 // ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// SHARED-SIM DRIVER (offline modes)
+// ═══════════════════════════════════════════════════════════════════════════════
+function spawnExplosionVisual(x, y) {
+  explosions.push({ x, y, r: 0, maxR: EXPL_RADIUS, life: 380, maxLife: 380 });
+  doShake(16); killFlash = Math.max(killFlash, 0.5);
+  spawnParticles(x, y, '#ff7700', 28, 1.8);
+  spawnParticles(x, y, '#ffcc00', 16, 1.2);
+  spawnParticles(x, y, '#ffffff', 10, 2.2);
+}
+
+// Turn pure-sim events into presentation (particles, shake, floats, killfeed…).
+function applyEvents(events) {
+  const deadBots = [];
+  for (const e of events) {
+    const P = simState.players;
+    switch (e.t) {
+      case 'build':      spawnParticles(e.x, e.y, e.team === 1 ? '#aa66ff' : '#5588ff', 4); break;
+      case 'bulletWall': spawnParticles(e.x, e.y, '#bb7722', 3); break;
+      case 'wallBreak':  spawnParticles(e.x, e.y, '#ffaa33', 7); break;
+      case 'explosion':  spawnExplosionVisual(e.x, e.y); break;
+      case 'melee':      if (P[e.id]) P[e.id].swingStart = performance.now(); doShake(4); break;
+      case 'dash':       if (P[e.id]) { spawnParticles(P[e.id].x, P[e.id].y, '#88aaff', 8, 0.8); if (e.id === MY_ID) doShake(3); } break;
+      case 'reload':     if (e.id === MY_ID && P[e.id]) spawnFloat(P[e.id].x, P[e.id].y - 22, 'RELOADING', '#ffcc44', 12); break;
+      case 'potionDone': {
+        const p = P[e.id]; if (!p) break;
+        const amt = e.type === 'mini' ? MINI_AMOUNT : BIG_POT_AMOUNT;
+        spawnFloat(p.x, p.y - 30, `+${amt} SHIELD`, e.type === 'mini' ? '#88ccff' : '#bb88ff', 14);
+        spawnParticles(p.x, p.y, e.type === 'mini' ? '#88ccff' : '#bb88ff', 12, 0.8);
+        break;
+      }
+      case 'hit': {
+        const t = P[e.targetId]; if (!t) break;
+        if (e.targetId === MY_ID) {
+          playerHitFlash = 1; doShake(5); combo = 0;
+          spawnFloat(t.x, t.y - 28, `-${Math.ceil(e.dmg)}`, e.shieldOnly ? '#88ccff' : '#ff4444', 14);
+        } else if (e.sourceId === MY_ID) {
+          addComboHit(t.x, t.y);
+          spawnFloat(t.x, t.y - 28, String(Math.ceil(e.dmg)), '#fff', 14);
+        }
+        break;
+      }
+      case 'kill': {
+        if (e.targetId === MY_ID) {
+          doShake(12); playerHitFlash = 1;
+          spawnParticles(e.x, e.y, '#4488ff', 20); spawnParticles(e.x, e.y, '#fff', 8);
+          triggerSlowMo(650);
+        } else {
+          totalKills++; triggerSlowMo(650); killFlash = 1; doShake(8);
+          spawnParticles(e.x, e.y, '#ff5533', 22); spawnParticles(e.x, e.y, '#ffcc00', 10); spawnParticles(e.x, e.y, '#fff', 6);
+          spawnFloat(e.x, e.y - 45, 'ELIMINATED!', '#44ff88', 18);
+          if (e.sourceId === MY_ID && e.weapon) killfeed.unshift({ text: `You eliminated Bot [${e.weapon.toUpperCase()}]`, life: 4500 });
+          deadBots.push(e.targetId);
+        }
+        break;
+      }
+    }
+  }
+  // Remove eliminated bots from the sim
+  for (const id of deadBots) if (id !== MY_ID) removePlayer(simState, id);
+}
+
+// Gather the local player's input for this tick.
+function gatherInput() {
+  const p = simState.players[MY_ID];
+  const kb = keybinds;
+  let mx = 0, my = 0;
+  if (keys[kb.up]    || keys['ArrowUp'])    my -= 1;
+  if (keys[kb.down]  || keys['ArrowDown'])  my += 1;
+  if (keys[kb.left]  || keys['ArrowLeft'])  mx -= 1;
+  if (keys[kb.right] || keys['ArrowRight']) mx += 1;
+
+  const locked = document.pointerLockElement === canvas;
+  const aimAngle = locked
+    ? Math.atan2(virtualMouse.y - p.y, virtualMouse.x - p.x)
+    : Math.atan2(mouse.y - p.y, mouse.x - p.x);
+
+  const input = {
+    moveX: mx, moveY: my, aimAngle,
+    fire: !!(mouse.buttons & 1), build: !!(mouse.buttons & 2),
+    weapon: selectedWeapon,
+    dash: pendingInput.dash, edit: pendingInput.edit, reset: pendingInput.reset,
+    reload: pendingInput.reload, mini: pendingInput.mini, bigpot: pendingInput.bigpot,
+  };
+  return { input, locked };
+}
+
+function syncSimGlobals() {
+  player  = simState.players[MY_ID];
+  walls   = simState.walls;
+  bullets = simState.bullets;
+  bots    = Object.values(simState.players).filter(p => p.id !== MY_ID);
+}
+
+// One offline simulation tick driven by shared/sim.js.
+function stepSim(scaledDt) {
+  const p = simState.players[MY_ID];
+  if (!p) return;
+
+  const { input, locked } = gatherInput();
+  const preX = p.x, preY = p.y;
+
+  const events = simStep(simState, { [MY_ID]: input }, performance.now(), scaledDt);
+
+  // Consume one-shot edge inputs
+  pendingInput.dash = pendingInput.edit = pendingInput.reset =
+    pendingInput.reload = pendingInput.mini = pendingInput.bigpot = false;
+
+  // Keep the world-space aim cursor pinned relative to the player while moving.
+  if (locked) {
+    virtualMouse.x += p.x - preX;
+    virtualMouse.y += p.y - preY;
+    const cdx = virtualMouse.x - p.x, cdy = virtualMouse.y - p.y;
+    const cd = Math.sqrt(cdx * cdx + cdy * cdy) || 1;
+    if (cd < 50) { virtualMouse.x = p.x + cdx / cd * 50; virtualMouse.y = p.y + cdy / cd * 50; }
+  }
+
+  // Dash afterimages
+  if (performance.now() < p.dashEnd && Math.random() > 0.35)
+    afterimages.push({ x: p.x, y: p.y, life: 10, maxLife: 10 });
+
+  // Survival storm damage (sim has no storm; apply client-side)
+  if (gameMode === 'survival' && !p.dead) {
+    const sd = Math.sqrt(dist2(p.x, p.y, storm.cx, storm.cy));
+    if (sd > storm.radius) {
+      const amt = 4 * scaledDt / 1000;
+      const sh = Math.min(p.shield, amt); p.shield -= sh;
+      p.hp -= Math.min(p.hp, amt - sh);
+      playerHitFlash = Math.max(playerHitFlash, 0.35);
+      if (p.hp <= 0 && !p.dead) { p.dead = true; p.hp = 0; doShake(12); triggerSlowMo(650); }
+    }
+  }
+
+  applyEvents(events);
+  syncSimGlobals();
+}
+
 function loop(timestamp) {
   const rawDt    = Math.min(timestamp - lastTime, 50);
   lastTime       = timestamp;
@@ -1620,11 +1780,16 @@ function loop(timestamp) {
 
   if (gameMode !== 'menu' && !paused) {
     if (!gameOver) {
-      updatePlayer(scaledDt);
-      if (gameMode === 'online') interpRemote(scaledDt);
-      else for (const b of bots) updateBot(b, scaledDt);
-      updateBullets();
-      updateWalls(rawDt);  // regen always real-time
+      if (isSimMode()) {
+        stepSim(scaledDt);                 // offline: shared/sim.js authority
+        if (gameMode === 'survival') checkWaveClear();
+        checkGameOver();
+      } else {                             // online: legacy client-auth path
+        updatePlayer(scaledDt);
+        interpRemote(scaledDt);
+        updateBullets();
+        updateWalls(rawDt);
+      }
       // Particles
       particles = particles.map(p => {
         const decay = Math.pow(0.88, scaledDt/FRAME_MS);
@@ -1663,26 +1828,38 @@ function init(mode) {
   shake.intensity=0; playerHitFlash=0; killFlash=0;
   combo=0; totalKills=0; bannerText=null; usingPotion=null;
 
-  player = makeEntity(CELL*2.5, H/2, false);
-  virtualMouse.x = player.x + 120;   // start aiming right toward center
-  virtualMouse.y = player.y;
-  bots   = [];
+  selectedWeapon = 'ar';
+  pendingInput = { dash:false, edit:false, reset:false, reload:false, mini:false, bigpot:false };
 
-  if (mode==='vsbot') {
-    const diff = BOT_DIFF[botDifficulty] ? botDifficulty : 'easy';
-    const b = makeEntity(W-CELL*2.5, H/2, true, diff);
-    b.aimAngle = Math.PI;
-    b.shield = diff==='hard' ? 100 : diff==='medium' ? 50 : 0;
-    const weps = BOT_DIFF[diff].weps;
-    b.weapon = weps[Math.floor(Math.random()*weps.length)];
-    bots = [b];
-  } else if (mode==='survival') {
-    wave=0; waveState='between'; waveTimer=2500;
-    storm={ cx:W/2, cy:H/2, radius:9999 };
-    spawnBanner('SURVIVAL MODE', '#ff9933', 28, 2500);
-  } else if (mode==='freebuild') {
-    player.materials = Infinity;
-  } else if (mode==='online') {
+  if (mode === 'vsbot' || mode === 'survival' || mode === 'freebuild') {
+    // ── Offline: build the shared-sim state ──
+    simState = createState();
+    const me = addPlayer(simState, MY_ID, { x: CELL*2.5, y: H/2, team: 0 });
+    if (mode === 'freebuild') me.materials = Infinity;
+    virtualMouse.x = me.x + 120;
+    virtualMouse.y = me.y;
+
+    if (mode === 'vsbot') {
+      const diff = BOT_DIFF[botDifficulty] ? botDifficulty : 'easy';
+      const weps = BOT_DIFF[diff].weps;
+      const b = addPlayer(simState, 'bot', {
+        x: W-CELL*2.5, y: H/2, team: 1, isBot: true, difficulty: diff,
+        weapon: weps[Math.floor(Math.random()*weps.length)],
+      });
+      b.shield = diff==='hard' ? 100 : diff==='medium' ? 50 : 0;
+    } else if (mode === 'survival') {
+      wave=0; waveState='between'; waveTimer=2500;
+      storm={ cx:W/2, cy:H/2, radius:9999 };
+      spawnBanner('SURVIVAL MODE', '#ff9933', 28, 2500);
+    }
+    syncSimGlobals();
+  } else {
+    // ── Online: legacy entity path ──
+    simState = null;
+    player = makeEntity(CELL*2.5, H/2, false);
+    virtualMouse.x = player.x + 120;
+    virtualMouse.y = player.y;
+    bots = [];
     remotePlayers = {};
   }
 
@@ -1722,47 +1899,49 @@ document.addEventListener('keydown', e => {
   if (paused) return;
 
   const kb = keybinds;
-  if (e.code === kb.edit)   tryEdit(player);           // toggle window ↔ full
-  if (e.code === kb.reset)  tryEdit(player, 'full');   // force full
 
-  if (e.code === kb.weapon1) player.weapon = WEAPON_ORDER[0];
-  if (e.code === kb.weapon2) player.weapon = WEAPON_ORDER[1];
-  if (e.code === kb.weapon3) player.weapon = WEAPON_ORDER[2];
-  if (e.code === kb.weapon4) player.weapon = WEAPON_ORDER[3];
-  if (e.code === kb.weapon5) player.weapon = WEAPON_ORDER[4];
-  if (e.code === kb.weapon6) player.weapon = WEAPON_ORDER[5];
+  // Weapon select (1–6)
+  const wIdx = [kb.weapon1,kb.weapon2,kb.weapon3,kb.weapon4,kb.weapon5,kb.weapon6].indexOf(e.code);
+  if (wIdx >= 0) { if (isSimMode()) selectedWeapon = WEAPON_ORDER[wIdx]; else player.weapon = WEAPON_ORDER[wIdx]; }
 
-  if (e.code === kb.clear && gameMode === 'freebuild') { walls = {}; bullets = []; }
-
-  if (e.code === kb.mini)   startPotion('mini');
-  if (e.code === kb.bigpot) startPotion('big');
-
-  if (e.code === kb.reload) {
-    const ws = player.ammo[player.weapon], wep = WEAPONS[player.weapon];
-    if (ws && wep.magSize !== Infinity && ws.count < wep.magSize) {
-      ws.reloadEnd = performance.now() + wep.reloadTime;
-      ws.count     = wep.magSize;
-      spawnFloat(player.x, player.y-22, 'RELOAD', '#ffcc44', 12);
+  if (isSimMode()) {
+    // Offline: convert keypresses into one-shot sim inputs
+    if (e.code === kb.edit)   pendingInput.edit   = true;
+    if (e.code === kb.reset)  pendingInput.reset  = true;
+    if (e.code === kb.reload) pendingInput.reload = true;
+    if (e.code === kb.mini)   pendingInput.mini   = true;
+    if (e.code === kb.bigpot) pendingInput.bigpot = true;
+    if (e.code === kb.dash)  { e.preventDefault(); pendingInput.dash = true; }
+    if (e.code === kb.clear && gameMode === 'freebuild') { simState.walls = {}; simState.bullets = []; syncSimGlobals(); }
+  } else {
+    // Online: legacy direct path
+    if (e.code === kb.edit)   tryEdit(player);
+    if (e.code === kb.reset)  tryEdit(player, 'full');
+    if (e.code === kb.mini)   startPotion('mini');
+    if (e.code === kb.bigpot) startPotion('big');
+    if (e.code === kb.reload) {
+      const ws = player.ammo[player.weapon], wep = WEAPONS[player.weapon];
+      if (ws && wep.magSize !== Infinity && ws.count < wep.magSize) {
+        ws.reloadEnd = performance.now() + wep.reloadTime; ws.count = wep.magSize;
+        spawnFloat(player.x, player.y-22, 'RELOAD', '#ffcc44', 12);
+      }
     }
-  }
-
-  if (e.code === kb.dash) {
-    e.preventDefault();
-    const now = performance.now();
-    if (!player.dead && now >= player.dashCd) {
-      usingPotion = null;   // dashing interrupts drinking
-      let dx=0, dy=0;
-      if (keys[kb.up]   || keys['ArrowUp'])    dy -= 1;
-      if (keys[kb.down] || keys['ArrowDown'])  dy += 1;
-      if (keys[kb.left] || keys['ArrowLeft'])  dx -= 1;
-      if (keys[kb.right]|| keys['ArrowRight']) dx += 1;
-      if (dx===0 && dy===0) { dx=Math.cos(player.aimAngle); dy=Math.sin(player.aimAngle); }
-      const m = Math.sqrt(dx*dx+dy*dy);
-      player.dashVx = dx/m*DASH_SPD; player.dashVy = dy/m*DASH_SPD;
-      player.dashEnd = now + DASH_DUR;
-      player.dashCd  = now + DASH_CD;
-      doShake(3);
-      spawnParticles(player.x, player.y, '#88aaff', 8, 0.8);
+    if (e.code === kb.dash) {
+      e.preventDefault();
+      const now = performance.now();
+      if (!player.dead && now >= player.dashCd) {
+        usingPotion = null;
+        let dx=0, dy=0;
+        if (keys[kb.up]   || keys['ArrowUp'])    dy -= 1;
+        if (keys[kb.down] || keys['ArrowDown'])  dy += 1;
+        if (keys[kb.left] || keys['ArrowLeft'])  dx -= 1;
+        if (keys[kb.right]|| keys['ArrowRight']) dx += 1;
+        if (dx===0 && dy===0) { dx=Math.cos(player.aimAngle); dy=Math.sin(player.aimAngle); }
+        const m = Math.sqrt(dx*dx+dy*dy);
+        player.dashVx = dx/m*DASH_SPD; player.dashVy = dy/m*DASH_SPD;
+        player.dashEnd = now + DASH_DUR; player.dashCd = now + DASH_CD;
+        doShake(3); spawnParticles(player.x, player.y, '#88aaff', 8, 0.8);
+      }
     }
   }
   if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
@@ -1786,8 +1965,9 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
   if (gameMode==='menu') return;
-  const i=WEAPON_ORDER.indexOf(player.weapon);
-  player.weapon=WEAPON_ORDER[(i+(e.deltaY>0?1:-1)+WEAPON_ORDER.length)%WEAPON_ORDER.length];
+  const cur = isSimMode() ? selectedWeapon : player.weapon;
+  const next = WEAPON_ORDER[(WEAPON_ORDER.indexOf(cur)+(e.deltaY>0?1:-1)+WEAPON_ORDER.length)%WEAPON_ORDER.length];
+  if (isSimMode()) selectedWeapon = next; else player.weapon = next;
 },{passive:false});
 
 // Difficulty buttons
