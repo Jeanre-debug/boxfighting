@@ -1844,10 +1844,17 @@ async function loadProfile() {
 async function doSignIn() {
   const email = document.getElementById('auth-email').value.trim();
   const pass  = document.getElementById('auth-pass').value;
+  if (!email || !pass) { setAuthErr('Enter your email and password.'); return; }
+  const btn = document.getElementById('btn-auth-submit');
+  btn.textContent = 'SIGNING IN…'; btn.disabled = true;
   setAuthErr('');
-  const { error } = await sb.auth.signInWithPassword({ email, password: pass });
-  if (error) { setAuthErr(error.message); return; }
-  await afterAuth();
+  try {
+    const { error } = await sb.auth.signInWithPassword({ email, password: pass });
+    if (error) { setAuthErr(error.message); return; }
+    await afterAuth();
+  } finally {
+    btn.textContent = 'SIGN IN'; btn.disabled = false;
+  }
 }
 
 async function doSignUp() {
@@ -1858,7 +1865,10 @@ async function doSignUp() {
   if (uname.length < 3 || uname.length > 16 || !/^[a-z0-9_]+$/.test(uname)) {
     setAuthErr('Username: 3–16 chars, letters/numbers/underscore'); return;
   }
+  const btn = document.getElementById('btn-auth-submit');
+  btn.textContent = 'CREATING…'; btn.disabled = true;
 
+  try {
   // Check username availability before creating auth user
   const { data: taken } = await sb.from('profiles').select('id').eq('username', uname).maybeSingle();
   if (taken) { setAuthErr('Username already taken'); return; }
@@ -1876,13 +1886,14 @@ async function doSignUp() {
   currentUser = data.user;
 
   if (!data.session) {
-    // Email confirmation required — profile was already created by trigger
-    document.getElementById('auth-err').style.color = '#44cc77';
+    document.getElementById('auth-err').style.color = '#4ade80';
     document.getElementById('auth-err').textContent = 'Account created! Check your email to confirm, then sign in.';
     return;
   }
-
   await afterAuth();
+  } finally {
+    btn.textContent = 'CREATE ACCOUNT'; btn.disabled = false;
+  }
 }
 
 async function afterAuth() {
