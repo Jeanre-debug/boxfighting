@@ -187,6 +187,19 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
 }
 .settings-footer button:hover { color:var(--muted); border-color:var(--muted); }
 
+/* matchmaking */
+.mm-box { display:flex; flex-direction:column; align-items:center; gap:16px; }
+.mm-spinner {
+  width:44px; height:44px; border-radius:50%;
+  border:3px solid var(--border); border-top-color:var(--blue);
+  animation:spin 0.75s linear infinite;
+}
+@keyframes spin { to { transform:rotate(360deg); } }
+.mm-title { font-size:10px; font-weight:700; letter-spacing:5px; color:var(--muted); }
+.mm-mode  { font-size:38px; font-weight:900; color:var(--text); letter-spacing:4px; }
+.mm-timer { font-size:22px; font-weight:300; color:var(--muted); font-variant-numeric:tabular-nums; }
+.mm-status{ font-size:11px; color:var(--ghost); letter-spacing:1px; }
+
 /* online indicator */
 #online-indicator {
   position:fixed; top:14px; right:14px; font-size:10px; font-weight:700;
@@ -242,6 +255,18 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
     </div>
   </div>
 
+  <!-- Matchmaking waiting screen -->
+  <div id="matchmaking" class="overlay" style="z-index:25">
+    <div class="mm-box">
+      <div class="mm-title">FINDING MATCH</div>
+      <div class="mm-spinner"></div>
+      <div class="mm-mode" id="mm-mode-label">1V1</div>
+      <div class="mm-timer" id="mm-timer">0:00</div>
+      <div class="mm-status" id="mm-status">Searching for players…</div>
+      <button class="sm-btn" id="btn-cancel-mm" style="margin-top:4px">CANCEL</button>
+    </div>
+  </div>
+
   <!-- Online lobby hub -->
   <div id="lobby-screen" class="overlay" style="z-index:20">
     <div class="lobby-box">
@@ -249,15 +274,23 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
         <span class="lobby-eyebrow">ONLINE</span>
         <span class="lobby-username" id="online-username"></span>
       </div>
+
+      <div style="font-size:9px;color:var(--ghost);letter-spacing:4px;font-weight:700">QUICK MATCH</div>
       <div class="mode-pick">
         <button class="diff-btn sel" data-m="1v1">1v1</button>
         <button class="diff-btn" data-m="2v2">2v2</button>
       </div>
-      <button class="prim-btn" id="btn-create-lobby">CREATE LOBBY</button>
+      <button class="prim-btn" id="btn-quick-match">FIND MATCH</button>
+
+      <div style="height:1px;background:var(--border);margin:2px 0"></div>
+
+      <div style="font-size:9px;color:var(--ghost);letter-spacing:4px;font-weight:700">PRIVATE LOBBY</div>
+      <button class="sm-btn" id="btn-create-lobby" style="width:100%;padding:10px 0">CREATE LOBBY</button>
       <div class="join-row">
         <input class="field" id="join-code-input" placeholder="CODE" maxlength="4">
         <button class="sm-btn" id="btn-join-lobby">JOIN</button>
       </div>
+
       <div class="err-msg" id="lobby-err"></div>
       <button class="link-btn" id="btn-lobby-back">← Back to menu</button>
     </div>
@@ -322,13 +355,13 @@ const sb = supabase.createClient(SB_URL, SB_ANON);
 const CELL         = 72, COLS = 15, ROWS = 11;
 const W            = COLS * CELL, H = ROWS * CELL;
 const WALL_THICK   = 12, WALL_HP = 100, WALL_START_HP = 35, WALL_REGEN = 10;
-const P_RADIUS     = 12, P_SPEED = 3.2, BOT_BASE_SPEED = 2.6;
+const P_RADIUS     = 12, P_SPEED = 2.1, BOT_BASE_SPEED = 1.7;
 const BULLET_SPEED = 8;
 const MAT_MAX = 300, MAT_COST = 10, MAT_REGEN = 0.06;
 const BUILD_CD     = 140;
 const SUB_STEPS    = 4, WIN_FRAC = 0.25;
 const FRAME_MS     = 1000 / 60;
-const DASH_DUR     = 200, DASH_CD = 3000, DASH_SPD = 24;
+const DASH_DUR     = 200, DASH_CD = 3000, DASH_SPD = 16;
 const EXPL_RADIUS  = 90;
 const COMBO_RESET  = 2400;
 
@@ -2129,6 +2162,83 @@ function handleRemoteGameEnd({ winner }) {
   document.getElementById('result').classList.add('show');
 }
 
+// ─── Matchmaking ─────────────────────────────────────────────────────────────
+let mmMode = '1v1', mmTimerInterval = null, mmSecs = 0, mmQueueCh = null;
+
+function mmTick() {
+  mmSecs++;
+  const m = Math.floor(mmSecs/60), s = mmSecs%60;
+  document.getElementById('mm-timer').textContent = `${m}:${s.toString().padStart(2,'0')}`;
+  if (mmSecs >= 120) { cancelMatchmaking(); setLobbyErr('No match found — try again.'); }
+}
+
+async function startMatchmaking() {
+  if (!currentUser || !currentProfile) return;
+  setLobbyErr('');
+  await sb.from('matchmaking_queue').delete().eq('player_id', currentUser.id);
+
+  document.getElementById('lobby-screen').classList.remove('show');
+  document.getElementById('mm-mode-label').textContent = mmMode.toUpperCase();
+  document.getElementById('mm-status').textContent = 'Searching for players…';
+  document.getElementById('mm-timer').textContent = '0:00';
+  document.getElementById('matchmaking').classList.add('show');
+
+  mmSecs = 0;
+  mmTimerInterval = setInterval(mmTick, 1000);
+
+  const { error } = await sb.from('matchmaking_queue').insert({ player_id: currentUser.id, mode: mmMode });
+  if (error) { await cancelMatchmaking(); setLobbyErr(error.message); return; }
+
+  const { data: lobbyId } = await sb.rpc('try_match', { p_mode: mmMode });
+  if (lobbyId) { await enterMatchedLobby(lobbyId); return; }
+
+  // Watch for match
+  mmQueueCh = sb.channel(`mm_watch_${currentUser.id}`)
+    .on('postgres_changes', {
+      event: 'UPDATE', schema: 'public', table: 'matchmaking_queue',
+      filter: `player_id=eq.${currentUser.id}`,
+    }, async ({ new: row }) => { if (row.lobby_id) await enterMatchedLobby(row.lobby_id); })
+    .subscribe();
+}
+
+async function cancelMatchmaking() {
+  clearInterval(mmTimerInterval); mmTimerInterval = null;
+  if (mmQueueCh) { sb.removeChannel(mmQueueCh); mmQueueCh = null; }
+  await sb.from('matchmaking_queue').delete().eq('player_id', currentUser.id);
+  document.getElementById('matchmaking').classList.remove('show');
+  document.getElementById('lobby-screen').classList.add('show');
+}
+
+async function enterMatchedLobby(lobbyId) {
+  clearInterval(mmTimerInterval); mmTimerInterval = null;
+  if (mmQueueCh) { sb.removeChannel(mmQueueCh); mmQueueCh = null; }
+  await sb.from('matchmaking_queue').delete().eq('player_id', currentUser.id);
+
+  const { data: lobby  } = await sb.from('lobbies').select().eq('id', lobbyId).single();
+  const { data: members} = await sb.from('lobby_members')
+    .select('*, profiles(username)').eq('lobby_id', lobbyId);
+  if (!lobby || !members) return;
+
+  currentLobby = lobby;
+  const me = members.find(m => m.player_id === currentUser.id);
+  myTeam = me?.team ?? 0;
+
+  document.getElementById('matchmaking').classList.remove('show');
+  document.getElementById('mm-status').textContent = 'Match found!';
+
+  subscribeToLobby(lobbyId);
+
+  // Host starts the game after a short delay to let all clients subscribe
+  if (currentUser.id === lobby.host_id) {
+    setTimeout(() => {
+      broadcastGameStart(
+        members.map(m => ({ userId:m.player_id, username:m.profiles.username, team:m.team, ready:true })),
+        lobby.mode
+      );
+    }, 3000);
+  }
+}
+
 // ─── Online button wiring ─────────────────────────────────────────────────────
 document.getElementById('btn-play-online').addEventListener('click', async () => {
   const { data: { user } } = await sb.auth.getUser();
@@ -2165,14 +2275,18 @@ document.getElementById('btn-auth-back').addEventListener('click', () => {
   document.getElementById('menu').classList.add('show');
 });
 
-// Lobby mode buttons
+// Lobby / matchmaking mode buttons (shared [data-m] selector)
 document.querySelectorAll('[data-m]').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('[data-m]').forEach(b => b.classList.remove('sel'));
     btn.classList.add('sel');
     lobbyModeSelected = btn.dataset.m;
+    mmMode = btn.dataset.m;
   });
 });
+
+document.getElementById('btn-quick-match').addEventListener('click', startMatchmaking);
+document.getElementById('btn-cancel-mm').addEventListener('click', cancelMatchmaking);
 document.getElementById('btn-create-lobby').addEventListener('click', createLobby);
 document.getElementById('btn-join-lobby').addEventListener('click', joinByCode);
 document.getElementById('btn-lobby-back').addEventListener('click', () => {
