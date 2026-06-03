@@ -368,6 +368,14 @@ const FRAME_MS     = 1000 / 60;
 const DASH_DUR     = 200, DASH_CD = 3000, DASH_SPD = 16;
 const EXPL_RADIUS  = 90;
 const COMBO_RESET  = 2400;
+const SHIELD_MAX      = 150;
+const MINI_SHIELD_CAP = 50;
+const MINI_AMOUNT     = 25;
+const BIG_POT_AMOUNT  = 50;
+const MINI_USE_MS     = 2000;
+const BIG_USE_MS      = 4000;
+const PLAYER_MINIS    = 3;
+const PLAYER_BIGPOTS  = 1;
 
 const WEAPON_ORDER = ['ar','smg','shotgun','sniper','rocket','pickaxe'];
 const WEAPONS = {
@@ -389,6 +397,7 @@ const COMBO_LABELS = ['','','DOUBLE!','TRIPLE!','QUAD!','PENTA!','RAMPAGE!'];
 const DEFAULT_BINDS = {
   up:'KeyW', down:'KeyS', left:'KeyA', right:'KeyD',
   dash:'Space', edit:'KeyE', reset:'KeyF', reload:'KeyR', clear:'KeyC',
+  mini:'KeyQ', bigpot:'KeyG',
   weapon1:'Digit1', weapon2:'Digit2', weapon3:'Digit3',
   weapon4:'Digit4', weapon5:'Digit5', weapon6:'Digit6',
 };
@@ -401,6 +410,9 @@ const BIND_DEFS = [
   { key:'edit',  label:'Edit  (toggle)'  },
   { key:'reset', label:'Force Full Wall' },
   { key:'reload',label:'Reload'          },
+  { group:'ITEMS' },
+  { key:'mini',   label:'Mini Shield  (25 · 2s)' },
+  { key:'bigpot', label:'Shield Potion (50 · 4s)' },
   { group:'WEAPONS' },
   { key:'weapon1',label:'Weapon 1' }, { key:'weapon2',label:'Weapon 2' },
   { key:'weapon3',label:'Weapon 3' }, { key:'weapon4',label:'Weapon 4' },
@@ -452,6 +464,8 @@ let virtualMouse = { x: W/2, y: H/2 };
 let paused = false;
 let lastTime = 0, timeScale = 1.0, slowMoTimer = 0;
 
+let usingPotion = null;  // { type:'mini'|'big', startTime, duration }
+
 // Online
 let currentUser = null, currentProfile = null;
 let currentLobby = null, lobbyChannel = null;
@@ -484,6 +498,7 @@ function makeEntity(x, y, isBot, difficulty) {
     aimAngle: 0, lastFire: -9999, lastBuild: -9999,
     weapon: 'ar',
     ammo: makeAmmo(),
+    shield: 0, minis: isBot ? 0 : PLAYER_MINIS, bigPots: isBot ? 0 : PLAYER_BIGPOTS,
     dashEnd: 0, dashCd: 0, dashInvincible: false, dashVx: 0, dashVy: 0,
     swingStart: null, dead: false,
     // bot-only
@@ -663,17 +678,23 @@ function tryEdit(entity, toState) {
 // ═══════════════════════════════════════════════════════════════════════════════
 function applyDamage(target, amount, source) {
   if (target.dead || target.dashInvincible) return 0;
-  const actual = Math.min(amount, Math.max(0, target.hp));
+
+  // Shield absorbs damage first
+  const shieldDmg = Math.min(target.shield || 0, amount);
+  target.shield   = Math.max(0, (target.shield || 0) - shieldDmg);
+  const hpDmg     = Math.min(Math.max(0, target.hp), amount - shieldDmg);
+  target.hp      -= hpDmg;
+  const actual    = shieldDmg + hpDmg;
   if (actual <= 0) return 0;
-  target.hp -= actual;
 
   if (target === player) {
+    usingPotion = null;   // interrupt any active potion
     playerHitFlash = 1;
     doShake(5);
     combo = 0;
-    spawnFloat(target.x, target.y-28, `-${Math.ceil(actual)}`, '#ff4444', 14);
+    const col = shieldDmg > 0 && hpDmg === 0 ? '#88ccff' : '#ff4444';
+    spawnFloat(target.x, target.y-28, `-${Math.ceil(actual)}`, col, 14);
   } else {
-    // Player hit an enemy
     addComboHit(target.x, target.y);
     spawnFloat(target.x, target.y-28, String(Math.ceil(actual)), '#fff', 14);
   }
@@ -904,6 +925,39 @@ function updateBullets() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// SHIELD POTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+function startPotion(type) {
+  if (player.dead || usingPotion) return;
+  if (type === 'mini') {
+    if (player.minis <= 0) { spawnFloat(player.x, player.y-30, 'NO MINIS', '#ff6644', 12); return; }
+    if (player.shield >= MINI_SHIELD_CAP) { spawnFloat(player.x, player.y-30, 'SHIELD FULL', '#88ccff', 12); return; }
+  } else {
+    if (player.bigPots <= 0) { spawnFloat(player.x, player.y-30, 'NO POTIONS', '#ff6644', 12); return; }
+    if (player.shield >= SHIELD_MAX) { spawnFloat(player.x, player.y-30, 'SHIELD FULL', '#88ccff', 12); return; }
+  }
+  usingPotion = { type, startTime: performance.now(), duration: type === 'mini' ? MINI_USE_MS : BIG_USE_MS };
+}
+
+function updatePotion() {
+  if (!usingPotion || player.dead) { usingPotion = null; return; }
+  // Cancel if the player moves while drinking
+  if (performance.now() - usingPotion.startTime >= usingPotion.duration) {
+    if (usingPotion.type === 'mini') {
+      player.shield = Math.min(MINI_SHIELD_CAP, player.shield + MINI_AMOUNT);
+      player.minis--;
+      spawnFloat(player.x, player.y-30, `+${MINI_AMOUNT} SHIELD`, '#88ccff', 14);
+    } else {
+      player.shield = Math.min(SHIELD_MAX, player.shield + BIG_POT_AMOUNT);
+      player.bigPots--;
+      spawnFloat(player.x, player.y-30, `+${BIG_POT_AMOUNT} SHIELD`, '#bb88ff', 14);
+    }
+    spawnParticles(player.x, player.y, usingPotion.type === 'mini' ? '#88ccff' : '#bb88ff', 12, 0.8);
+    usingPotion = null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // LINE-OF-SIGHT
 // ═══════════════════════════════════════════════════════════════════════════════
 function hasLOS(x1, y1, x2, y2) {
@@ -1041,8 +1095,12 @@ function updatePlayer(scaledDt) {
   if (gameMode !== 'freebuild' && player.materials < MAT_MAX)
     player.materials = Math.min(MAT_MAX, player.materials + MAT_REGEN * scaledDt / FRAME_MS);
 
-  if (mouse.buttons & 1) tryFireWeapon(player);
-  if (mouse.buttons & 2) tryBuild(player);
+  // Advance / complete an in-progress shield potion (can't act while drinking)
+  updatePotion();
+  if (!usingPotion) {
+    if (mouse.buttons & 1) tryFireWeapon(player);
+    if (mouse.buttons & 2) tryBuild(player);
+  }
 
   // Storm damage
   if (gameMode === 'survival') {
@@ -1079,6 +1137,7 @@ function spawnWave(n) {
     const diff = n<=2?'easy': n<=5?'medium':'hard';
     const pos  = randomEdgeSpawn();
     const b    = makeEntity(pos.x, pos.y, true, diff);
+    b.shield   = diff==='hard' ? 75 : diff==='medium' ? 40 : 0;
     const weps = BOT_DIFF[diff].weps;
     b.weapon   = weps[Math.floor(Math.random()*weps.length)];
     b.aimAngle = Math.atan2(player.y-b.y, player.x-b.x);
@@ -1274,12 +1333,33 @@ function drawEntity(e, bodyColor) {
     ctx.stroke();
   }
 
+  // Potion-drinking ring (player only)
+  if (!e.isBot && usingPotion) {
+    const p = Math.min(1, (now - usingPotion.startTime) / usingPotion.duration);
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.radius+11, -Math.PI/2, -Math.PI/2 + Math.PI*2*p);
+    ctx.strokeStyle = usingPotion.type === 'mini' ? '#88ccff' : '#bb88ff';
+    ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.stroke();
+  }
+
+  // HP + shield bars
+  const bw=e.radius*2.6, bh=5, bx=e.x-bw/2;
+  const hasShield = (e.shield||0) > 0;
+  const hpY = e.y - e.radius - (hasShield ? 19 : 13);
+
   // HP bar
-  const bw=e.radius*2.6, bh=5, bx=e.x-bw/2, by=e.y-e.radius-13;
-  ctx.fillStyle='#1a1a1a'; ctx.fillRect(bx,by,bw,bh);
+  ctx.fillStyle='#1a1a1a'; ctx.fillRect(bx,hpY,bw,bh);
   const pct=Math.max(0,e.hp/100);
   ctx.fillStyle=pct>0.5?'#33cc55':pct>0.25?'#ddaa22':'#dd3333';
-  ctx.fillRect(bx,by,bw*pct,bh);
+  ctx.fillRect(bx,hpY,bw*pct,bh);
+
+  // Shield bar (just above HP, scaled to 150 max)
+  if (hasShield) {
+    const sy = hpY + bh + 1;
+    ctx.fillStyle='#1a1a1a'; ctx.fillRect(bx,sy,bw,4);
+    ctx.fillStyle='#55aaff';
+    ctx.fillRect(bx,sy,bw*Math.min(1,e.shield/SHIELD_MAX),4);
+  }
 }
 
 function drawWeaponHUD() {
@@ -1494,19 +1574,42 @@ function render() {
   }
 
   // ── HUD ───────────────────────────────────────────────────────────────────
-  // Player HP + mats
-  ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(10,10,170,48);
-  ctx.fillStyle='#ccc'; ctx.font='13px monospace';
-  ctx.fillText(`HP   ${Math.max(0,Math.ceil(player.hp))}`, 20,28);
-  const matStr = gameMode==='freebuild' ? 'MAT  ∞' : `MAT  ${Math.floor(player.materials)}/${MAT_MAX}`;
-  ctx.fillText(matStr, 20, 48);
+  // Player status panel
+  ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(10,10,210,74);
 
-  // Dash ready pip
+  // HP bar
+  const hudX=20, hudW=140;
+  ctx.fillStyle='#888'; ctx.font='10px monospace';
+  ctx.fillText('HP', hudX, 26);
+  ctx.fillStyle='#101410'; ctx.fillRect(hudX+26, 18, hudW, 9);
+  const hpFrac=Math.max(0,player.hp/100);
+  ctx.fillStyle=hpFrac>0.5?'#33cc55':hpFrac>0.25?'#ddaa22':'#dd3333';
+  ctx.fillRect(hudX+26, 18, hudW*hpFrac, 9);
+  ctx.fillStyle='#ccc'; ctx.font='9px monospace';
+  ctx.fillText(Math.max(0,Math.ceil(player.hp)), hudX+26+hudW+6, 26);
+
+  // Shield bar
+  ctx.fillStyle='#668'; ctx.font='10px monospace';
+  ctx.fillText('SH', hudX, 42);
+  ctx.fillStyle='#0a0e18'; ctx.fillRect(hudX+26, 34, hudW, 9);
+  ctx.fillStyle='#55aaff';
+  ctx.fillRect(hudX+26, 34, hudW*Math.min(1,(player.shield||0)/SHIELD_MAX), 9);
+  ctx.fillStyle='#9cf'; ctx.font='9px monospace';
+  ctx.fillText(Math.ceil(player.shield||0), hudX+26+hudW+6, 42);
+
+  // Materials + items row
+  ctx.font='10px monospace';
+  const matStr = gameMode==='freebuild' ? '∞' : `${Math.floor(player.materials)}`;
+  ctx.fillStyle='#88bbff'; ctx.fillText(`◆ ${matStr}`, hudX, 60);
+  ctx.fillStyle='#88ccff'; ctx.fillText(`◢ ${player.minis}`, hudX+56, 60);
+  ctx.fillStyle='#bb88ff'; ctx.fillText(`◍ ${player.bigPots}`, hudX+104, 60);
+
+  // Dash pip
   const dashReady = performance.now() >= player.dashCd;
-  ctx.fillStyle = dashReady ? '#44ccff' : '#334455';
-  ctx.beginPath(); ctx.arc(190, 22, 5, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle=dashReady?'#aaeeff':'#446688'; ctx.font='10px monospace';
-  ctx.fillText(dashReady?'DASH':'DASH', 200, 26);
+  ctx.fillStyle = dashReady ? '#44ccff' : '#2a3a4a';
+  ctx.beginPath(); ctx.arc(hudX+5, 74, 4, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle=dashReady?'#aaeeff':'#445566'; ctx.font='9px monospace';
+  ctx.fillText('DASH', hudX+14, 77);
 
   // Kill feed
   killfeed.slice(0,4).forEach((kf,i) => {
@@ -1635,7 +1738,7 @@ function init(mode) {
   walls={};bullets=[];particles=[];explosions=[];afterimages=[];floatingTexts=[];killfeed=[];
   gameOver=false; timeScale=1.0; slowMoTimer=0;
   shake.intensity=0; playerHitFlash=0; killFlash=0;
-  combo=0; totalKills=0; bannerText=null;
+  combo=0; totalKills=0; bannerText=null; usingPotion=null;
 
   player = makeEntity(CELL*2.5, H/2, false);
   virtualMouse.x = player.x + 120;   // start aiming right toward center
@@ -1646,6 +1749,7 @@ function init(mode) {
     const diff = botDifficulty;
     const b = makeEntity(W-CELL*2.5, H/2, true, diff);
     b.aimAngle = Math.PI;
+    b.shield = diff==='hard' ? 100 : diff==='medium' ? 50 : 0;
     const weps = BOT_DIFF[diff].weps;
     b.weapon = weps[Math.floor(Math.random()*weps.length)];
     bots = [b];
@@ -1707,6 +1811,9 @@ document.addEventListener('keydown', e => {
 
   if (e.code === kb.clear && gameMode === 'freebuild') { walls = {}; bullets = []; }
 
+  if (e.code === kb.mini)   startPotion('mini');
+  if (e.code === kb.bigpot) startPotion('big');
+
   if (e.code === kb.reload) {
     const ws = player.ammo[player.weapon], wep = WEAPONS[player.weapon];
     if (ws && wep.magSize !== Infinity && ws.count < wep.magSize) {
@@ -1720,6 +1827,7 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     const now = performance.now();
     if (!player.dead && now >= player.dashCd) {
+      usingPotion = null;   // dashing interrupts drinking
       let dx=0, dy=0;
       if (keys[kb.up]   || keys['ArrowUp'])    dy -= 1;
       if (keys[kb.down] || keys['ArrowDown'])  dy += 1;
@@ -2142,15 +2250,15 @@ function broadcastMyState() {
     userId: currentUser.id,
     x: player.x, y: player.y,
     aimAngle: player.aimAngle,
-    hp: player.hp, weapon: player.weapon, dead: player.dead,
+    hp: player.hp, shield: player.shield, weapon: player.weapon, dead: player.dead,
   });
 }
 
 // ─── Incoming handlers ────────────────────────────────────────────────────────
-function handleRemoteState({ userId, x, y, aimAngle, hp, weapon, dead }) {
+function handleRemoteState({ userId, x, y, aimAngle, hp, shield, weapon, dead }) {
   const rp = remotePlayers[userId]; if (!rp) return;
   rp.targetX = x; rp.targetY = y; rp.aimAngle = aimAngle;
-  rp.hp = Math.max(0, hp); rp.weapon = weapon;
+  rp.hp = Math.max(0, hp); rp.shield = shield || 0; rp.weapon = weapon;
   if (dead && !rp.dead) {
     rp.dead = true; rp.hp = 0;
     spawnParticles(rp.x, rp.y, '#ff5533', 20);
