@@ -1765,7 +1765,7 @@ async function doSignUp() {
     email, password: pass,
     options: {
       data: { username: uname },
-      emailRedirectTo: 'https://boxfight.vertomedia.co.za',
+      emailRedirectTo: 'https://boxfight.vertomedia.co.za/', // also works via boxfighting.vercel.app
     },
   });
   if (error) { setAuthErr(error.message); return; }
