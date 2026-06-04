@@ -208,6 +208,24 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
   border:1px solid #14532d; border-radius:999px; letter-spacing:2px; z-index:100; display:none;
 }
 #online-indicator.show { display:block; }
+
+/* ── rank badges ── */
+.rank-badge {
+  display:inline-flex; align-items:center; gap:10px; padding:8px 14px; border-radius:10px;
+  background:linear-gradient(135deg, rgba(255,255,255,0.04), rgba(0,0,0,0.45));
+  border:1px solid var(--c1); box-shadow:0 0 26px -10px var(--c1);
+}
+.rank-badge.lg { padding:12px 20px; gap:14px; }
+.rank-ico { font-size:22px; line-height:1; filter:drop-shadow(0 0 8px var(--c2)); }
+.rank-badge.lg .rank-ico { font-size:34px; }
+.rank-text { display:flex; flex-direction:column; line-height:1.2; }
+.rank-text .rk-name { color:var(--c1); font-size:13px; font-weight:800; letter-spacing:2px; }
+.rank-badge.lg .rk-name { font-size:18px; }
+.rank-text .rk-div  { color:#fff; }
+.rank-text .rk-mmr  { font-size:10px; color:#5a6678; letter-spacing:1px; font-weight:600; }
+.rank-delta { font-size:14px; font-weight:800; letter-spacing:1px; margin-top:2px; }
+.rank-delta.up   { color:#4ade80; } .rank-delta.down { color:#f87171; }
+.rank-promote { font-size:12px; font-weight:800; letter-spacing:3px; margin-top:4px; }
 </style>
 </head>
 <body>
@@ -276,12 +294,14 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
         <span class="lobby-username" id="online-username"></span>
       </div>
 
-      <div style="font-size:9px;color:var(--ghost);letter-spacing:4px;font-weight:700">QUICK MATCH</div>
+      <div id="rank-badge-slot" style="display:flex;justify-content:center;margin:2px 0"></div>
+
+      <div style="font-size:9px;color:var(--ghost);letter-spacing:4px;font-weight:700">RANKED — fight players your rank</div>
       <div class="mode-pick">
         <button class="diff-btn sel" data-m="1v1">1v1</button>
         <button class="diff-btn" data-m="2v2">2v2</button>
       </div>
-      <button class="prim-btn" id="btn-quick-match">FIND MATCH</button>
+      <button class="prim-btn" id="btn-quick-match">RANKED MATCH</button>
 
       <div style="height:1px;background:var(--border);margin:2px 0"></div>
 
@@ -339,6 +359,7 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
   <div id="result" class="overlay" style="flex-direction:column;gap:16px">
     <div id="resultText"></div>
     <div id="resultSub"></div>
+    <div id="result-rank" style="display:flex;flex-direction:column;align-items:center;gap:6px"></div>
     <div class="btn-row">
       <button class="prim-btn" id="btn-again" style="width:160px">PLAY AGAIN</button>
       <button class="sm-btn" id="btn-menu">MENU</button>
@@ -467,6 +488,45 @@ const usesInputModel = () => isSimMode() || serverMode;
 let predicted = null;         // { x, y, aimAngle, dashVx, dashVy, dashEnd, dashReadyAt }
 let inputHistory = [];        // unacked inputs to replay on reconcile
 const PERF = () => performance.now();
+
+// ─── Ranked system ────────────────────────────────────────────────────────────
+// From scrap to master architect — the box-fight climb.
+const RANK_TIERS = [
+  { name:'SCRAP',     c1:'#b3a392', c2:'#7a6c58', icon:'📦' },
+  { name:'TIMBER',    c1:'#d99a4e', c2:'#8a5a1e', icon:'🪵' },
+  { name:'BRICK',     c1:'#e0664a', c2:'#9c2f1c', icon:'🧱' },
+  { name:'STONE',     c1:'#9aa3b0', c2:'#586271', icon:'🪨' },
+  { name:'IRON',      c1:'#8fa9d6', c2:'#41608f', icon:'⚔️' },
+  { name:'CRYSTAL',   c1:'#56e0ea', c2:'#1690a0', icon:'💎' },
+  { name:'OBSIDIAN',  c1:'#b083f5', c2:'#5e2fae', icon:'🔮' },
+  { name:'ARCHITECT', c1:'#ffe066', c2:'#d99a16', icon:'👑' },
+];
+const RANK_BAND = 300;        // MMR per tier (3 divisions of 100)
+function rankFromRating(r) {
+  r = Math.max(0, r | 0);
+  let idx = Math.floor(r / RANK_BAND); if (idx > 7) idx = 7;
+  const tier = RANK_TIERS[idx];
+  if (idx === 7) return { idx, tier, name: tier.name, roman: '', rating: r };
+  const within = r - idx * RANK_BAND;
+  const roman = within < 100 ? 'III' : within < 200 ? 'II' : 'I';
+  return { idx, tier, name: tier.name, roman, rating: r };
+}
+function rankBadgeHTML(rating, big) {
+  const rk = rankFromRating(rating);
+  return `<div class="rank-badge ${big ? 'lg' : ''}" style="--c1:${rk.tier.c1};--c2:${rk.tier.c2}">
+    <span class="rank-ico">${rk.tier.icon}</span>
+    <span class="rank-text"><span class="rk-name">${rk.name}${rk.roman ? ` <span class="rk-div">${rk.roman}</span>` : ''}</span>
+    <span class="rk-mmr">${rk.rating} MMR</span></span></div>`;
+}
+function updateRankUI() {
+  const slot = document.getElementById('rank-badge-slot');
+  if (slot && currentProfile) slot.innerHTML = rankBadgeHTML(currentProfile.rating ?? 300, false);
+}
+
+// Matchmaking / ranked match state
+let isMatchmade = false;      // true for ranked random matches (don't persist lobby)
+let matchOppRating = 300;     // opponent (avg enemy) rating for Elo
+let resultWasRanked = false;  // result screen came from a ranked match
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENTITY FACTORY
@@ -1788,6 +1848,9 @@ function startServerGame(assignments, mode, room) {
   currentRoom = room || currentLobby.id;
   usernamesById = {};
   assignments.forEach(a => { usernamesById[a.userId] = a.username; });
+  // Average enemy-team rating for Elo
+  const enemies = assignments.filter(a => a.team !== myTeam);
+  matchOppRating = enemies.length ? Math.round(enemies.reduce((s, a) => s + (a.rating ?? 300), 0) / enemies.length) : 300;
 
   gameMode = 'online'; serverMode = true; gameOver = false;
   walls = {}; bullets = []; particles = []; explosions = []; afterimages = []; floatingTexts = []; killfeed = [];
@@ -1999,6 +2062,22 @@ function stepServer(scaledDt) {
   syncNetGlobals();
 }
 
+// Elo update for ranked matches. Returns { delta, before, after }.
+function applyRankedResult(won) {
+  const my = currentProfile.rating ?? 300;
+  const exp = 1 / (1 + Math.pow(10, (matchOppRating - my) / 400));
+  const K = 32;
+  const delta = Math.round(K * ((won ? 1 : 0) - exp));
+  const after = Math.max(0, my + delta);
+  const before = rankFromRating(my);
+  currentProfile.rating = after;
+  if (won) currentProfile.wins = (currentProfile.wins||0) + 1; else currentProfile.losses = (currentProfile.losses||0) + 1;
+  sb.from('profiles').update({ rating: after, wins: currentProfile.wins, losses: currentProfile.losses })
+    .eq('id', currentUser.id).then(()=>{}, ()=>{});
+  updateRankUI();
+  return { delta, before, after: rankFromRating(after) };
+}
+
 function showServerResult(outcome, sub) {
   if (gameOver) return;
   gameOver = true; serverMode = false; matchStarting = false;
@@ -2006,13 +2085,45 @@ function showServerResult(outcome, sub) {
   if (netWS) { try { netWS.close(); } catch {} netWS = null; }
   if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
   document.getElementById('online-indicator').classList.remove('show');
-  // NOTE: keep currentLobby + lobbyChannel alive so the lobby persists for a rematch.
+
   const el = document.getElementById('resultText');
   el.textContent = outcome === 'win' ? 'YOU WIN' : outcome === 'draw' ? 'DRAW' : 'YOU LOSE';
   el.style.color = outcome === 'win' ? '#44ff88' : outcome === 'draw' ? '#ddaa22' : '#ff4444';
   document.getElementById('resultSub').textContent = sub || '';
-  document.getElementById('btn-again').textContent = (currentLobby ? 'BACK TO LOBBY' : 'PLAY AGAIN');
+
+  resultWasRanked = isMatchmade;
+  const rankEl = document.getElementById('result-rank');
+  rankEl.innerHTML = '';
+  if (isMatchmade) {
+    if (outcome !== 'draw') {
+      const res = applyRankedResult(outcome === 'win');
+      const sign = res.delta >= 0 ? '+' : '';
+      let promo = '';
+      if (res.after.idx > res.before.idx || (res.after.idx === res.before.idx && res.after.roman !== res.before.roman && outcome === 'win'))
+        promo = `<div class="rank-promote" style="color:${res.after.tier.c1}">▲ PROMOTED</div>`;
+      else if (res.after.idx < res.before.idx)
+        promo = `<div class="rank-promote" style="color:#f87171">▼ DEMOTED</div>`;
+      rankEl.innerHTML = rankBadgeHTML(res.after.rating, true)
+        + `<div class="rank-delta ${res.delta >= 0 ? 'up' : 'down'}">${sign}${res.delta} MMR</div>` + promo;
+    } else {
+      rankEl.innerHTML = rankBadgeHTML(currentProfile.rating ?? 300, true);
+    }
+    // Ranked random matches don't persist a lobby — part ways.
+    leaveMatchmadeLobby();
+    document.getElementById('btn-again').textContent = 'NEW MATCH';
+  } else {
+    document.getElementById('btn-again').textContent = (currentLobby ? 'BACK TO LOBBY' : 'PLAY AGAIN');
+  }
   document.getElementById('result').classList.add('show');
+}
+
+// Quietly leave the matchmaking lobby so a ranked random opponent isn't kept around.
+function leaveMatchmadeLobby() {
+  if (currentLobby) {
+    sb.from('lobby_members').delete().eq('lobby_id', currentLobby.id).eq('player_id', currentUser.id).then(()=>{}, ()=>{});
+  }
+  if (lobbyChannel) { sb.removeChannel(lobbyChannel); lobbyChannel = null; }
+  currentLobby = null; isMatchmade = false;
 }
 
 // Return to the persistent waiting room (same lobby + presence channel) for a rematch.
@@ -2026,7 +2137,7 @@ function returnToLobby() {
   btn.textContent = 'READY'; btn.style.background = '';
   document.getElementById('lobby-status-msg').textContent = 'Waiting for ready…';
   document.getElementById('in-lobby').classList.add('show');
-  if (lobbyChannel) lobbyChannel.track({ userId: currentUser.id, username: currentProfile.username, team: myTeam, ready: false });
+  if (lobbyChannel) lobbyChannel.track({ userId: currentUser.id, username: currentProfile.username, team: myTeam, ready: false, rating: currentProfile.rating ?? 300 });
 }
 
 function loop(timestamp) {
@@ -2109,7 +2220,7 @@ function init(mode) {
   combo=0; totalKills=0; bannerText=null; usingPotion=null;
 
   selectedWeapon = 'ar';
-  serverMode = false; lastWasOnline = false;
+  serverMode = false; lastWasOnline = false; isMatchmade = false; resultWasRanked = false;
   pendingInput = { dash:false, edit:false, reset:false, reload:false, mini:false, bigpot:false };
 
   if (mode === 'vsbot' || mode === 'survival' || mode === 'freebuild') {
@@ -2265,8 +2376,14 @@ document.getElementById('btn-vsbot').addEventListener('click',    ()=>startGame(
 document.getElementById('btn-survival').addEventListener('click',  ()=>startGame('survival'));
 document.getElementById('btn-freebuild').addEventListener('click', ()=>startGame('freebuild'));
 document.getElementById('btn-again').addEventListener('click', () => {
-  if (lastWasOnline && currentLobby) returnToLobby();   // rematch in the same lobby
-  else startGame(lastMode);
+  if (resultWasRanked) {                                  // NEW MATCH → re-queue ranked
+    document.getElementById('result').classList.remove('show');
+    startMatchmaking();
+  } else if (lastWasOnline && currentLobby) {
+    returnToLobby();                                       // rematch in the same private lobby
+  } else {
+    startGame(lastMode);
+  }
 });
 document.getElementById('btn-menu').addEventListener('click', showMenu);
 
@@ -2419,10 +2536,20 @@ async function doSignUp() {
 async function afterAuth(user) {
   currentUser = user;
   const username = user.user_metadata?.username || user.email.split('@')[0];
-  currentProfile = { id: user.id, username };
+  currentProfile = { id: user.id, username, rating: 300, wins: 0, losses: 0 };
   document.getElementById('online-username').textContent = username;
   document.getElementById('auth').classList.remove('show');
   document.getElementById('lobby-screen').classList.add('show');
+  updateRankUI();
+  // Pull ranked stats in the background (defaults stand if columns/row missing)
+  sb.from('profiles').select('rating,wins,losses').eq('id', user.id).single().then(({ data }) => {
+    if (data) {
+      currentProfile.rating = data.rating ?? 300;
+      currentProfile.wins   = data.wins   ?? 0;
+      currentProfile.losses = data.losses ?? 0;
+      updateRankUI();
+    }
+  }, () => {});
 }
 
 function setAuthErr(msg) { document.getElementById('auth-err').textContent = msg; }
@@ -2475,7 +2602,7 @@ async function joinLobbyById(lobbyId, team) {
   const { error } = await sb.from('lobby_members')
     .upsert({ lobby_id: lobbyId, player_id: currentUser.id, team, ready: false }, { onConflict: 'lobby_id,player_id' });
   if (error) { setLobbyErr(error.message); return; }
-  currentLobby = lobby; myTeam = team; amIReady = false; matchStarting = false;
+  currentLobby = lobby; myTeam = team; amIReady = false; matchStarting = false; isMatchmade = false;
   document.getElementById('lobby-screen').classList.remove('show');
   document.getElementById('lobby-code-disp').textContent = lobby.code;
   document.getElementById('mode-disp').textContent = lobby.mode.toUpperCase();
@@ -2496,7 +2623,7 @@ async function toggleReady() {
   document.getElementById('btn-ready').textContent = amIReady ? 'UNREADY' : 'READY';
   document.getElementById('btn-ready').style.background = amIReady ? 'rgba(20,80,40,0.9)' : '';
   // Broadcast presence FIRST (this drives the start handshake); DB write is best-effort.
-  if (lobbyChannel) await lobbyChannel.track({ userId: currentUser.id, username: currentProfile.username, team: myTeam, ready: amIReady });
+  if (lobbyChannel) await lobbyChannel.track({ userId: currentUser.id, username: currentProfile.username, team: myTeam, ready: amIReady, rating: currentProfile.rating ?? 300 });
   sb.from('lobby_members').update({ ready: amIReady })
     .eq('lobby_id', currentLobby.id).eq('player_id', currentUser.id).then(()=>{}, ()=>{});
 }
@@ -2521,7 +2648,7 @@ function subscribeLobby(lobbyId, initialReady = false) {
     .on('broadcast', { event: 'game_end' },   ({ payload }) => handleRemoteGameEnd(payload))
     .subscribe(async status => {
       if (status === 'SUBSCRIBED')
-        await lobbyChannel.track({ userId: currentUser.id, username: currentProfile.username, team: myTeam, ready: amIReady });
+        await lobbyChannel.track({ userId: currentUser.id, username: currentProfile.username, team: myTeam, ready: amIReady, rating: currentProfile.rating ?? 300 });
     });
 }
 
@@ -2588,13 +2715,14 @@ function checkAllReady(presence) {
 // Build the start payload. `room` is a fresh per-match id so a rematch in the
 // same persistent lobby spins up a clean server room (both clients share it).
 function buildStartPayload(players, mode) {
-  const assignments = players.map(p => ({ userId: p.userId, username: p.username, team: p.team }));
-  return { assignments, mode, room: `${currentLobby.id}:${Date.now()}` };
+  const assignments = players.map(p => ({ userId: p.userId, username: p.username, team: p.team, rating: p.rating ?? 300 }));
+  return { assignments, mode, room: `${currentLobby.id}:${Date.now()}`, ranked: isMatchmade };
 }
 
 // ─── Game start handler ───────────────────────────────────────────────────────
-function handleGameStart({ assignments, mode, room }) {
+function handleGameStart({ assignments, mode, room, ranked }) {
   if (serverMode) return;   // already started (guard against duplicate broadcasts)
+  if (typeof ranked === 'boolean') isMatchmade = ranked;
   startServerGame(assignments, mode, room);
 }
 
@@ -2686,11 +2814,22 @@ async function startMatchmaking() {
     .order('created_at', { ascending: true }).limit(30);
   if (error) { await cancelMatchmaking(); setLobbyErr(error.message); return; }
 
+  // Fetch host ratings for rank-based pairing
+  const myRating = currentProfile.rating ?? 300;
+  const hostIds = (lobbies || []).map(l => l.host_id).filter(Boolean);
+  const hostRating = {};
+  if (hostIds.length) {
+    const { data: profs } = await sb.from('profiles').select('id,rating').in('id', hostIds);
+    (profs || []).forEach(p => { hostRating[p.id] = p.rating ?? 300; });
+  }
+  const ratingWindow = 250;   // pair within ±250 MMR (≈ within a tier or two)
+
   let target = null, joinTeam = 0;
   for (const lb of (lobbies || [])) {
     const members = lb.lobby_members || [];
     if (members.length === 0 || members.length >= maxP) continue;
     if (members.some(m => m.player_id === currentUser.id)) continue;
+    if (Math.abs((hostRating[lb.host_id] ?? 300) - myRating) > ratingWindow) continue;  // rank gate
     const t0 = members.filter(m => m.team === 0).length;
     const t1 = members.filter(m => m.team === 1).length;
     joinTeam = t0 <= t1 ? 0 : 1;
@@ -2715,7 +2854,7 @@ async function joinMatchLobby(lobbyId, team) {
   const { error } = await sb.from('lobby_members')
     .upsert({ lobby_id: lobbyId, player_id: currentUser.id, team, ready: true }, { onConflict: 'lobby_id,player_id' });
   if (error) { await cancelMatchmaking(); setLobbyErr(error.message); return; }
-  currentLobby = lobby; myTeam = team; amIReady = true; matchStarting = false;
+  currentLobby = lobby; myTeam = team; amIReady = true; matchStarting = false; isMatchmade = true;
   document.getElementById('lobby-code-disp').textContent = lobby.code;
   document.getElementById('mode-disp').textContent = lobby.mode.toUpperCase();
   document.getElementById('mm-status').textContent = 'Waiting for an opponent…';
@@ -2781,12 +2920,13 @@ document.getElementById('btn-play-online').addEventListener('click', async () =>
     const { data: { user } } = await sb.auth.getUser();
     if (user) {
       currentUser = user;
-      if (!currentProfile) await loadProfile();
-      if (currentProfile) {
+      if (!currentProfile) {
+        await afterAuth(user);           // sets profile + rating, shows lobby
+      } else {
         document.getElementById('auth').classList.remove('show');
         document.getElementById('lobby-screen').classList.add('show');
+        updateRankUI();
       }
-      // else: loadProfile showed an error, stay on auth
     }
     // else: not logged in, already on auth screen — do nothing
   } catch (e) {
