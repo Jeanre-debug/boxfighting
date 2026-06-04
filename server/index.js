@@ -48,6 +48,7 @@ function serializeState(s) {
       materials: p.materials === Infinity ? -1 : p.materials,
       dashReadyAt: p.dashReadyAt, potionEnd: p.potionEnd, potionType: p.potionType,
       swingEnd: p.swingEnd,
+      ammo: Object.fromEntries(C.WEAPON_ORDER.map(id => [id, p.ammo[id].count])),
     };
   }
   const bullets = s.bullets.map(b => ({

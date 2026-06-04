@@ -1339,7 +1339,7 @@ function drawWeaponHUD() {
     const wep    = WEAPONS[id];
     const x      = sx+i*(slotW+gap);
     const active = player.weapon===id;
-    const ws     = player.ammo[id];
+    const ws     = (player.ammo && player.ammo[id]) || { count: wep.magSize, reloadEnd: 0 };
     const reloading = now < ws.reloadEnd;
     const relPct    = reloading ? 1-(ws.reloadEnd-now)/wep.reloadTime : 0;
 
@@ -1822,7 +1822,9 @@ function handleServerMsg(m) {
     const won = m.winner === myTeam;
     showServerResult(won ? 'win' : (m.winner === 'draw' ? 'draw' : 'lose'), '');
   } else if (m.type === 'start') {
-    canvas.requestPointerLock();
+    // Pointer lock needs a user gesture — prompt a click instead of auto-locking.
+    const ind = document.getElementById('online-indicator');
+    ind.textContent = '● ONLINE · click to lock aim'; ind.classList.add('show');
   }
 }
 
@@ -1836,6 +1838,7 @@ function ingestSnapshot(m) {
     rp.aimAngle = sp.aimAngle; rp.hp = sp.hp; rp.shield = sp.shield; rp.dead = sp.dead;
     rp.weapon = sp.weapon; rp.team = sp.team; rp.minis = sp.minis; rp.bigPots = sp.bigPots;
     rp.materials = sp.materials === -1 ? Infinity : sp.materials;
+    if (sp.ammo) { rp.ammo = {}; for (const w in sp.ammo) rp.ammo[w] = { count: sp.ammo[w], reloadEnd: 0 }; }
     // NOTE: server timer fields are sim-time; client animations are driven by events below.
   }
   for (const id in netPlayers) if (!m.state.players[id]) delete netPlayers[id];
@@ -2047,7 +2050,7 @@ function loop(timestamp) {
     explosions = explosions.map(ex => ({ ...ex, life:ex.life-rawDt })).filter(ex=>ex.life>0);
 
     if (gameMode==='survival' && !gameOver) updateSurvival(rawDt);
-    render();
+    try { render(); } catch (e) { console.error('render error:', e); }   // never let a draw bug freeze the loop
   }
   requestAnimationFrame(loop);
 }
@@ -2235,7 +2238,8 @@ document.addEventListener('pointerlockchange', () => {
   if (locked) {
     paused = false;
     pauseEl.classList.remove('show');
-  } else if (gameMode !== 'menu' && gameMode !== 'freebuild' && !gameOver) {
+  } else if (gameMode !== 'menu' && gameMode !== 'freebuild' && !gameOver && !serverMode) {
+    // Don't pause online — the server keeps simulating; just release the cursor.
     paused = true;
     pauseEl.classList.add('show');
   }
