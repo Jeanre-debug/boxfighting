@@ -1808,6 +1808,8 @@ function startServerGame(assignments, mode, room) {
   document.getElementById('menu').classList.remove('show');
   document.getElementById('in-lobby').classList.remove('show');
   document.getElementById('result').classList.remove('show');
+  document.getElementById('matchmaking').classList.remove('show');
+  if (mmTimerInterval) { clearInterval(mmTimerInterval); mmTimerInterval = null; }
 
   netPing = 0; onlineMode = mode;
   const ind = document.getElementById('online-indicator');
@@ -2500,8 +2502,9 @@ async function toggleReady() {
 }
 
 // ─── Lobby realtime subscription ──────────────────────────────────────────────
-function subscribeLobby(lobbyId) {
+function subscribeLobby(lobbyId, initialReady = false) {
   if (lobbyChannel) sb.removeChannel(lobbyChannel);
+  amIReady = initialReady;
   lobbyChannel = sb.channel(`lobby:${lobbyId}`, { config: { presence: { key: currentUser.id } } });
 
   lobbyChannel
@@ -2518,7 +2521,7 @@ function subscribeLobby(lobbyId) {
     .on('broadcast', { event: 'game_end' },   ({ payload }) => handleRemoteGameEnd(payload))
     .subscribe(async status => {
       if (status === 'SUBSCRIBED')
-        await lobbyChannel.track({ userId: currentUser.id, username: currentProfile.username, team: myTeam, ready: false });
+        await lobbyChannel.track({ userId: currentUser.id, username: currentProfile.username, team: myTeam, ready: amIReady });
     });
 }
 
@@ -2651,50 +2654,85 @@ function handleRemoteGameEnd({ winner }) {
 }
 
 // ─── Matchmaking ─────────────────────────────────────────────────────────────
-let mmMode = '1v1', mmTimerInterval = null, mmSecs = 0, mmQueueCh = null;
+let mmMode = '1v1', mmTimerInterval = null, mmSecs = 0;
 
 function mmTick() {
   mmSecs++;
   const m = Math.floor(mmSecs/60), s = mmSecs%60;
   document.getElementById('mm-timer').textContent = `${m}:${s.toString().padStart(2,'0')}`;
-  if (mmSecs >= 120) { cancelMatchmaking(); setLobbyErr('No match found — try again.'); }
+  document.getElementById('mm-status').textContent = currentLobby ? 'Waiting for an opponent…' : 'Searching…';
+  if (mmSecs >= 150) { cancelMatchmaking(); setLobbyErr('No match found — try again.'); }
 }
 
+// Quick Match built on the lobby system: find an open public lobby of this mode
+// with a free slot and join it (auto-ready); otherwise create one and wait.
 async function startMatchmaking() {
   if (!currentUser || !currentProfile) return;
   setLobbyErr('');
-  await sb.from('matchmaking_queue').delete().eq('player_id', currentUser.id);
-
   document.getElementById('lobby-screen').classList.remove('show');
   document.getElementById('mm-mode-label').textContent = mmMode.toUpperCase();
-  document.getElementById('mm-status').textContent = 'Searching for players…';
+  document.getElementById('mm-status').textContent = 'Searching…';
   document.getElementById('mm-timer').textContent = '0:00';
   document.getElementById('matchmaking').classList.add('show');
-
   mmSecs = 0;
+  if (mmTimerInterval) clearInterval(mmTimerInterval);
   mmTimerInterval = setInterval(mmTick, 1000);
 
-  const { error } = await sb.from('matchmaking_queue').insert({ player_id: currentUser.id, mode: mmMode });
+  const maxP = mmMode === '2v2' ? 4 : 2;
+  const freshSince = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const { data: lobbies, error } = await sb.from('lobbies')
+    .select('id, host_id, mode, status, created_at, lobby_members(player_id, team)')
+    .eq('mode', mmMode).eq('status', 'waiting').gte('created_at', freshSince)
+    .order('created_at', { ascending: true }).limit(30);
   if (error) { await cancelMatchmaking(); setLobbyErr(error.message); return; }
 
-  const { data: lobbyId } = await sb.rpc('try_match', { p_mode: mmMode });
-  if (lobbyId) { await enterMatchedLobby(lobbyId); return; }
+  let target = null, joinTeam = 0;
+  for (const lb of (lobbies || [])) {
+    const members = lb.lobby_members || [];
+    if (members.length === 0 || members.length >= maxP) continue;
+    if (members.some(m => m.player_id === currentUser.id)) continue;
+    const t0 = members.filter(m => m.team === 0).length;
+    const t1 = members.filter(m => m.team === 1).length;
+    joinTeam = t0 <= t1 ? 0 : 1;
+    target = lb; break;
+  }
 
-  // Watch for match
-  mmQueueCh = sb.channel(`mm_watch_${currentUser.id}`)
-    .on('postgres_changes', {
-      event: 'UPDATE', schema: 'public', table: 'matchmaking_queue',
-      filter: `player_id=eq.${currentUser.id}`,
-    }, async ({ new: row }) => { if (row.lobby_id) await enterMatchedLobby(row.lobby_id); })
-    .subscribe();
+  if (target) {
+    await joinMatchLobby(target.id, joinTeam);
+  } else {
+    const code = rndCode();
+    const { data: lobby, error: ce } = await sb.from('lobbies')
+      .insert({ code, mode: mmMode, host_id: currentUser.id }).select().single();
+    if (ce) { await cancelMatchmaking(); setLobbyErr(ce.message); return; }
+    await joinMatchLobby(lobby.id, 0);
+  }
+}
+
+// Join a lobby for quick-match: auto-ready so the match starts as soon as it fills.
+async function joinMatchLobby(lobbyId, team) {
+  const { data: lobby } = await sb.from('lobbies').select().eq('id', lobbyId).single();
+  if (!lobby) { await cancelMatchmaking(); setLobbyErr('Lobby vanished — try again.'); return; }
+  const { error } = await sb.from('lobby_members')
+    .upsert({ lobby_id: lobbyId, player_id: currentUser.id, team, ready: true }, { onConflict: 'lobby_id,player_id' });
+  if (error) { await cancelMatchmaking(); setLobbyErr(error.message); return; }
+  currentLobby = lobby; myTeam = team; amIReady = true; matchStarting = false;
+  document.getElementById('lobby-code-disp').textContent = lobby.code;
+  document.getElementById('mode-disp').textContent = lobby.mode.toUpperCase();
+  document.getElementById('mm-status').textContent = 'Waiting for an opponent…';
+  subscribeLobby(lobbyId, true);   // auto-ready presence
 }
 
 async function cancelMatchmaking() {
   clearInterval(mmTimerInterval); mmTimerInterval = null;
-  if (mmQueueCh) { sb.removeChannel(mmQueueCh); mmQueueCh = null; }
-  await sb.from('matchmaking_queue').delete().eq('player_id', currentUser.id);
   document.getElementById('matchmaking').classList.remove('show');
   document.getElementById('lobby-screen').classList.add('show');
+  // Leave the lobby we created/joined while searching
+  if (currentLobby) {
+    const lid = currentLobby.id;
+    sb.from('lobby_members').delete().eq('lobby_id', lid).eq('player_id', currentUser.id).then(()=>{}, ()=>{});
+    if (lobbyChannel) { sb.removeChannel(lobbyChannel); lobbyChannel = null; }
+    currentLobby = null;
+  }
 }
 
 async function enterMatchedLobby(lobbyId) {
