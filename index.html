@@ -308,6 +308,33 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
   width:420px; display:flex; flex-direction:column; gap:14px; box-shadow:0 30px 80px rgba(0,0,0,0.6); }
 .fn-room-mode { font-size:10px; color:var(--ghost); text-align:center; letter-spacing:5px; font-weight:800; }
 .fn-room-btns { display:flex; align-items:center; justify-content:center; gap:14px; margin-top:6px; }
+
+/* ranks / progression screen */
+.ranks-card { background:rgba(8,12,26,0.94); border:1px solid #18223f; border-radius:16px;
+  padding:26px 30px; width:460px; max-height:90vh; overflow-y:auto; display:flex; flex-direction:column; gap:16px;
+  box-shadow:0 30px 80px rgba(0,0,0,0.6); }
+.ranks-head { display:flex; align-items:center; justify-content:space-between; }
+.ranks-head span { font-size:15px; font-weight:800; letter-spacing:4px; color:#fff; }
+#ranks-hero { display:flex; flex-direction:column; align-items:center; gap:12px; }
+.rank-progress { width:100%; }
+.rank-prog-bar { height:12px; border-radius:99px; background:#070b16; border:1px solid #18223f; overflow:hidden; }
+.rank-prog-fill { height:100%; border-radius:99px; transition:width .4s; }
+.rank-prog-label { font-size:11px; color:var(--muted); text-align:center; margin-top:6px; letter-spacing:1px; font-weight:600; }
+.ranks-stats { display:flex; justify-content:center; gap:26px; padding:10px 0; border-top:1px solid #131a2e; border-bottom:1px solid #131a2e; }
+.ranks-stat { display:flex; flex-direction:column; align-items:center; }
+.ranks-stat b { font-size:20px; color:#fff; font-weight:800; }
+.ranks-stat span { font-size:9px; color:var(--ghost); letter-spacing:2px; font-weight:700; margin-top:2px; }
+.ladder { display:flex; flex-direction:column; gap:6px; }
+.ladder-row { display:flex; align-items:center; gap:12px; padding:10px 14px; border-radius:10px;
+  background:rgba(10,16,34,0.5); border:1px solid transparent; }
+.ladder-row.cur { border-color:var(--rc); background:rgba(255,255,255,0.04); box-shadow:0 0 24px -10px var(--rc); }
+.ladder-ico { font-size:24px; width:30px; text-align:center; filter:grayscale(0.4); }
+.ladder-row.cur .ladder-ico { filter:none; }
+.ladder-name { flex:1; font-size:14px; font-weight:800; letter-spacing:2px; color:var(--rc); }
+.ladder-range { font-size:10px; color:var(--ghost); letter-spacing:1px; font-weight:600; }
+.ladder-you { font-size:9px; font-weight:900; letter-spacing:2px; color:#0a0e1c; background:var(--rc); padding:3px 8px; border-radius:99px; }
+#rank-badge-slot { cursor:pointer; transition:transform .12s; }
+#rank-badge-slot:hover { transform:scale(1.04); }
 </style>
 </head>
 <body>
@@ -433,6 +460,19 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
         <button class="fn-play sm" id="btn-ready">READY</button>
         <button class="fn-mini" id="btn-leave-lobby">LEAVE</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Ranks / progression screen -->
+  <div id="ranks-screen" class="overlay fn-bg" style="z-index:30">
+    <div class="ranks-card">
+      <div class="ranks-head">
+        <span>RANKED LADDER</span>
+        <button class="fn-exit" id="btn-ranks-close">✕ CLOSE</button>
+      </div>
+      <div id="ranks-hero"></div>
+      <div class="ranks-stats" id="ranks-stats"></div>
+      <div class="ladder" id="ranks-ladder"></div>
     </div>
   </div>
 
@@ -626,6 +666,59 @@ function updateRankUI() {
   if (slot) slot.innerHTML = rankBadgeHTML(currentProfile.rating ?? 300, false);
   const emblem = document.getElementById('lobby-emblem');
   if (emblem) emblem.textContent = rankFromRating(currentProfile.rating ?? 300).tier.icon;
+}
+
+// Ranks / progression screen
+function openRanks() {
+  if (!currentProfile) return;
+  renderRanksScreen();
+  document.getElementById('ranks-screen').classList.add('show');
+}
+function closeRanks() { document.getElementById('ranks-screen').classList.remove('show'); }
+
+function renderRanksScreen() {
+  const r  = currentProfile.rating ?? 300;
+  const rk = rankFromRating(r);
+
+  // Hero badge + progress toward next division/tier
+  let progHTML;
+  if (rk.idx >= 7) {
+    progHTML = `<div class="rank-progress"><div class="rank-prog-bar"><div class="rank-prog-fill"
+      style="width:100%;background:linear-gradient(90deg,${rk.tier.c2},${rk.tier.c1})"></div></div>
+      <div class="rank-prog-label">MAX TIER REACHED · ${r} MMR</div></div>`;
+  } else {
+    const bandStart = Math.floor(r / 100) * 100;
+    const next = bandStart + 100;
+    const pct = Math.max(4, r - bandStart);            // 0–99 within the division
+    const nextRk = rankFromRating(next);
+    const nextLabel = `${nextRk.tier.name}${nextRk.roman ? ' ' + nextRk.roman : ''}`;
+    progHTML = `<div class="rank-progress"><div class="rank-prog-bar"><div class="rank-prog-fill"
+      style="width:${pct}%;background:linear-gradient(90deg,${rk.tier.c2},${rk.tier.c1})"></div></div>
+      <div class="rank-prog-label">${r} MMR · <b style="color:${rk.tier.c1}">${next - r}</b> to ${nextLabel}</div></div>`;
+  }
+  document.getElementById('ranks-hero').innerHTML = rankBadgeHTML(r, true) + progHTML;
+
+  // Stats
+  const w = currentProfile.wins || 0, l = currentProfile.losses || 0;
+  const wr = (w + l) ? Math.round(w / (w + l) * 100) : 0;
+  document.getElementById('ranks-stats').innerHTML =
+    `<div class="ranks-stat"><b>${w}</b><span>WINS</span></div>
+     <div class="ranks-stat"><b>${l}</b><span>LOSSES</span></div>
+     <div class="ranks-stat"><b>${wr}%</b><span>WIN RATE</span></div>`;
+
+  // Full ladder, highest tier at the top
+  let html = '';
+  for (let i = 7; i >= 0; i--) {
+    const t = RANK_TIERS[i];
+    const range = i === 7 ? '2100+ MMR' : `${i * 300}–${i * 300 + 299}`;
+    const cur = i === rk.idx;
+    html += `<div class="ladder-row ${cur ? 'cur' : ''}" style="--rc:${t.c1}">
+      <span class="ladder-ico">${t.icon}</span>
+      <span class="ladder-name">${t.name}</span>
+      <span class="ladder-range">${range}</span>
+      ${cur ? `<span class="ladder-you">${rk.roman || 'YOU'}</span>` : ''}</div>`;
+  }
+  document.getElementById('ranks-ladder').innerHTML = html;
 }
 
 // Matchmaking / ranked match state
@@ -3071,6 +3164,8 @@ document.querySelectorAll('[data-q]').forEach(btn => {
   });
 });
 document.getElementById('btn-play').addEventListener('click', () => startMatchmaking(selectedQueue === 'ranked'));
+document.getElementById('rank-badge-slot').addEventListener('click', openRanks);
+document.getElementById('btn-ranks-close').addEventListener('click', closeRanks);
 document.getElementById('btn-cancel-mm').addEventListener('click', cancelMatchmaking);
 document.getElementById('btn-create-lobby').addEventListener('click', createLobby);
 document.getElementById('btn-join-lobby').addEventListener('click', joinByCode);
