@@ -226,6 +226,88 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
 .rank-delta { font-size:14px; font-weight:800; letter-spacing:1px; margin-top:2px; }
 .rank-delta.up   { color:#4ade80; } .rank-delta.down { color:#f87171; }
 .rank-promote { font-size:12px; font-weight:800; letter-spacing:3px; margin-top:4px; }
+
+/* ════════ FORTNITE-STYLE LOBBY ════════ */
+.fn-bg {
+  background:
+    radial-gradient(120% 90% at 50% 118%, rgba(59,130,246,0.22) 0%, rgba(59,130,246,0) 55%),
+    radial-gradient(100% 80% at 50% -10%, rgba(120,80,255,0.14) 0%, rgba(0,0,0,0) 50%),
+    linear-gradient(180deg, #0b1024 0%, #080a16 55%, #05060d 100%) !important;
+}
+.fn-lobby { width:100%; height:100%; display:flex; flex-direction:column; }
+
+/* top bar */
+.fn-top { display:flex; align-items:center; justify-content:space-between; padding:22px 30px; }
+.fn-player { display:flex; align-items:center; gap:14px; }
+.fn-pname { display:flex; flex-direction:column; line-height:1.2; }
+.fn-eyebrow { font-size:9px; color:var(--ghost); letter-spacing:3px; font-weight:700; }
+.fn-uname { font-size:20px; color:#fff; font-weight:800; letter-spacing:0.5px; }
+.fn-exit { background:transparent; border:1px solid var(--border); color:var(--muted); font-family:inherit;
+  font-size:11px; font-weight:700; letter-spacing:2px; padding:9px 16px; border-radius:8px; cursor:pointer; transition:all .14s; }
+.fn-exit:hover { color:#fff; border-color:var(--muted); }
+
+/* center showcase */
+.fn-stage { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; }
+.fn-emblem {
+  font-size:96px; line-height:1; filter:drop-shadow(0 12px 40px rgba(59,130,246,0.5));
+  animation:fnFloat 3.4s ease-in-out infinite;
+}
+@keyframes fnFloat { 0%,100%{ transform:translateY(0) rotate(-4deg);} 50%{ transform:translateY(-14px) rotate(4deg);} }
+.fn-tagline { font-size:13px; letter-spacing:8px; color:#39507e; font-weight:800; }
+
+/* bottom deck */
+.fn-deck { padding:0 0 28px; display:flex; flex-direction:column; align-items:center; gap:14px; }
+.fn-mode-card {
+  display:flex; gap:28px; background:rgba(10,16,34,0.7);
+  border:1px solid #18223f; border-radius:12px; padding:14px 22px; backdrop-filter:blur(4px);
+}
+.fn-card-row { display:flex; align-items:center; gap:12px; }
+.fn-card-label { font-size:10px; color:var(--ghost); letter-spacing:3px; font-weight:800; }
+.fn-seg { display:flex; background:#070b16; border:1px solid #18223f; border-radius:8px; overflow:hidden; }
+.fn-seg-btn { padding:8px 18px; font-size:12px; font-weight:800; letter-spacing:1px; cursor:pointer;
+  background:transparent; color:#42506a; border:none; font-family:inherit; transition:all .14s; }
+.fn-seg-btn.sel { background:linear-gradient(180deg,#2a62d6,#1c47a8); color:#fff; }
+.fn-seg-btn:hover:not(.sel) { color:#8aa0c4; }
+
+.fn-play {
+  width:380px; max-width:80vw; padding:20px 0; font-family:inherit; font-size:26px; font-weight:900;
+  letter-spacing:6px; cursor:pointer; color:#0a2a12; border:none; border-radius:12px;
+  background:linear-gradient(180deg,#7dffb0 0%,#37e07a 45%,#19c25e 100%);
+  box-shadow:0 8px 0 #0f8a40, 0 14px 40px -8px rgba(55,224,122,0.6); transition:transform .08s, box-shadow .08s;
+}
+.fn-play:hover { transform:translateY(-2px); box-shadow:0 10px 0 #0f8a40, 0 20px 50px -8px rgba(55,224,122,0.7); }
+.fn-play:active { transform:translateY(6px); box-shadow:0 2px 0 #0f8a40, 0 6px 20px -8px rgba(55,224,122,0.6); }
+.fn-play.sm { width:200px; font-size:18px; letter-spacing:4px; padding:14px 0; box-shadow:0 6px 0 #0f8a40, 0 10px 30px -8px rgba(55,224,122,0.5); }
+
+.fn-private { display:flex; align-items:center; gap:10px; }
+.fn-join { display:flex; gap:6px; }
+.fn-join .field { width:120px; text-transform:uppercase; letter-spacing:6px; text-align:center; font-weight:800; padding:9px 10px; }
+.fn-mini { background:rgba(10,16,34,0.8); border:1px solid #18223f; color:#7c8aa6; font-family:inherit;
+  font-size:11px; font-weight:700; letter-spacing:1px; padding:9px 16px; border-radius:8px; cursor:pointer; transition:all .14s; }
+.fn-mini:hover { color:#fff; border-color:#2a62d6; }
+
+/* searching screen */
+.fn-search { display:flex; flex-direction:column; align-items:center; gap:18px; }
+.fn-search-mode { font-size:12px; letter-spacing:4px; color:#5b95ff; font-weight:800; }
+.fn-radar { position:relative; width:140px; height:140px; display:flex; align-items:center; justify-content:center; }
+.fn-radar span { position:absolute; border:2px solid rgba(91,149,255,0.5); border-radius:50%; inset:0; animation:fnPulse 1.8s ease-out infinite; }
+.fn-radar span:nth-child(2){ animation-delay:.6s; } .fn-radar span:nth-child(3){ animation-delay:1.2s; }
+.fn-radar-dot { width:18px; height:18px; border-radius:50%; background:#5b95ff; box-shadow:0 0 24px #5b95ff; }
+@keyframes fnPulse { 0%{ transform:scale(.25); opacity:.9;} 100%{ transform:scale(1); opacity:0;} }
+.fn-search-title { font-size:34px; font-weight:900; letter-spacing:6px; color:#fff; }
+.fn-dots i { animation:fnBlink 1.2s infinite; } .fn-dots i:nth-child(2){animation-delay:.2s;} .fn-dots i:nth-child(3){animation-delay:.4s;}
+@keyframes fnBlink { 0%,100%{opacity:.2;} 50%{opacity:1;} }
+.fn-search-status { font-size:12px; color:var(--muted); letter-spacing:2px; }
+.fn-search-timer { font-size:22px; font-weight:300; color:#5b95ff; font-variant-numeric:tabular-nums; }
+.fn-cancel { margin-top:6px; background:transparent; border:1px solid #3a1212; color:#c0584e; font-family:inherit;
+  font-size:12px; font-weight:700; letter-spacing:2px; padding:10px 28px; border-radius:8px; cursor:pointer; transition:all .14s; }
+.fn-cancel:hover { color:#ff6b5e; border-color:#6a2018; }
+
+/* private waiting room */
+.fn-room { background:rgba(8,12,26,0.9); border:1px solid #18223f; border-radius:16px; padding:30px 34px;
+  width:420px; display:flex; flex-direction:column; gap:14px; box-shadow:0 30px 80px rgba(0,0,0,0.6); }
+.fn-room-mode { font-size:10px; color:var(--ghost); text-align:center; letter-spacing:5px; font-weight:800; }
+.fn-room-btns { display:flex; align-items:center; justify-content:center; gap:14px; margin-top:6px; }
 </style>
 </head>
 <body>
@@ -275,62 +357,81 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
   </div>
 
   <!-- Matchmaking waiting screen -->
-  <div id="matchmaking" class="overlay" style="z-index:25">
-    <div class="mm-box">
-      <div class="mm-title">FINDING MATCH</div>
-      <div class="mm-spinner"></div>
-      <div class="mm-mode" id="mm-mode-label">1V1</div>
-      <div class="mm-timer" id="mm-timer">0:00</div>
-      <div class="mm-status" id="mm-status">Searching for players…</div>
-      <button class="sm-btn" id="btn-cancel-mm" style="margin-top:4px">CANCEL</button>
+  <div id="matchmaking" class="overlay fn-bg" style="z-index:25">
+    <div class="fn-search">
+      <div class="fn-search-mode" id="mm-mode-label">RANKED · 1V1</div>
+      <div class="fn-radar"><span></span><span></span><span></span><div class="fn-radar-dot"></div></div>
+      <div class="fn-search-title">SEARCHING<span class="fn-dots"><i>.</i><i>.</i><i>.</i></span></div>
+      <div class="fn-search-status" id="mm-status">Finding players</div>
+      <div class="fn-search-timer" id="mm-timer">0:00</div>
+      <button class="fn-cancel" id="btn-cancel-mm">CANCEL</button>
     </div>
   </div>
 
-  <!-- Online lobby hub -->
-  <div id="lobby-screen" class="overlay" style="z-index:20">
-    <div class="lobby-box">
-      <div class="lobby-header">
-        <span class="lobby-eyebrow">ONLINE</span>
-        <span class="lobby-username" id="online-username"></span>
+  <!-- Online lobby hub (Fortnite-style) -->
+  <div id="lobby-screen" class="overlay fn-bg" style="z-index:20">
+    <div class="fn-lobby">
+      <!-- top bar -->
+      <div class="fn-top">
+        <div class="fn-player">
+          <div id="rank-badge-slot"></div>
+          <div class="fn-pname"><span class="fn-eyebrow">SIGNED IN</span><span class="fn-uname" id="online-username"></span></div>
+        </div>
+        <button class="fn-exit" id="btn-lobby-back">✕ MENU</button>
       </div>
 
-      <div id="rank-badge-slot" style="display:flex;justify-content:center;margin:2px 0"></div>
-
-      <div style="font-size:9px;color:var(--ghost);letter-spacing:4px;font-weight:700">QUICK MATCH</div>
-      <div class="mode-pick">
-        <button class="diff-btn sel" data-m="1v1">1v1</button>
-        <button class="diff-btn" data-m="2v2">2v2</button>
-      </div>
-      <button class="prim-btn" id="btn-ranked-match">RANKED MATCH</button>
-      <button class="sm-btn" id="btn-casual-match" style="width:100%;padding:11px 0">CASUAL MATCH</button>
-
-      <div style="height:1px;background:var(--border);margin:2px 0"></div>
-
-      <div style="font-size:9px;color:var(--ghost);letter-spacing:4px;font-weight:700">PRIVATE LOBBY</div>
-      <button class="sm-btn" id="btn-create-lobby" style="width:100%;padding:10px 0">CREATE LOBBY</button>
-      <div class="join-row">
-        <input class="field" id="join-code-input" placeholder="CODE" maxlength="4">
-        <button class="sm-btn" id="btn-join-lobby">JOIN</button>
+      <!-- center stage -->
+      <div class="fn-stage">
+        <div class="fn-emblem" id="lobby-emblem">🥊</div>
+        <div class="fn-tagline">BOX FIGHT ARENA</div>
       </div>
 
-      <div class="err-msg" id="lobby-err"></div>
-      <button class="link-btn" id="btn-lobby-back">← Back to menu</button>
+      <!-- bottom control deck -->
+      <div class="fn-deck">
+        <div class="fn-mode-card">
+          <div class="fn-card-row">
+            <span class="fn-card-label">QUEUE</span>
+            <div class="fn-seg" id="queue-seg">
+              <button class="fn-seg-btn sel" data-q="ranked">RANKED</button>
+              <button class="fn-seg-btn" data-q="casual">CASUAL</button>
+            </div>
+          </div>
+          <div class="fn-card-row">
+            <span class="fn-card-label">MODE</span>
+            <div class="fn-seg" id="mode-seg">
+              <button class="fn-seg-btn sel" data-m="1v1">1V1</button>
+              <button class="fn-seg-btn" data-m="2v2">2V2</button>
+            </div>
+          </div>
+        </div>
+
+        <button class="fn-play" id="btn-play">PLAY</button>
+
+        <div class="fn-private">
+          <button class="fn-mini" id="btn-create-lobby">+ PRIVATE LOBBY</button>
+          <div class="fn-join">
+            <input class="field" id="join-code-input" placeholder="CODE" maxlength="4">
+            <button class="fn-mini" id="btn-join-lobby">JOIN</button>
+          </div>
+        </div>
+        <div class="err-msg" id="lobby-err"></div>
+      </div>
     </div>
   </div>
 
-  <!-- Waiting room -->
-  <div id="in-lobby" class="overlay" style="z-index:20">
-    <div class="in-lobby-box">
+  <!-- Private waiting room (squad slots) -->
+  <div id="in-lobby" class="overlay fn-bg" style="z-index:20">
+    <div class="fn-room">
       <div class="code-banner">
         <div class="label">LOBBY CODE · click to copy</div>
         <div class="code" id="lobby-code-disp">----</div>
       </div>
-      <div id="mode-disp" style="font-size:9px;color:var(--ghost);text-align:center;letter-spacing:4px;font-weight:700">1V1</div>
+      <div id="mode-disp" class="fn-room-mode">1V1</div>
       <div class="player-list" id="player-list"></div>
       <div class="lobby-status-msg" id="lobby-status-msg">Waiting for players…</div>
-      <div class="btn-row" style="justify-content:center;margin-top:4px">
-        <button class="prim-btn" id="btn-ready" style="width:160px">READY</button>
-        <button class="sm-btn" id="btn-leave-lobby">LEAVE</button>
+      <div class="fn-room-btns">
+        <button class="fn-play sm" id="btn-ready">READY</button>
+        <button class="fn-mini" id="btn-leave-lobby">LEAVE</button>
       </div>
     </div>
   </div>
@@ -520,8 +621,11 @@ function rankBadgeHTML(rating, big) {
     <span class="rk-mmr">${rk.rating} MMR</span></span></div>`;
 }
 function updateRankUI() {
+  if (!currentProfile) return;
   const slot = document.getElementById('rank-badge-slot');
-  if (slot && currentProfile) slot.innerHTML = rankBadgeHTML(currentProfile.rating ?? 300, false);
+  if (slot) slot.innerHTML = rankBadgeHTML(currentProfile.rating ?? 300, false);
+  const emblem = document.getElementById('lobby-emblem');
+  if (emblem) emblem.textContent = rankFromRating(currentProfile.rating ?? 300).tier.icon;
 }
 
 // Matchmaking / ranked match state
@@ -2957,8 +3061,16 @@ document.querySelectorAll('[data-m]').forEach(btn => {
   });
 });
 
-document.getElementById('btn-ranked-match').addEventListener('click', () => startMatchmaking(true));
-document.getElementById('btn-casual-match').addEventListener('click', () => startMatchmaking(false));
+// Queue segmented control (ranked / casual)
+let selectedQueue = 'ranked';
+document.querySelectorAll('[data-q]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('[data-q]').forEach(b => b.classList.remove('sel'));
+    btn.classList.add('sel');
+    selectedQueue = btn.dataset.q;
+  });
+});
+document.getElementById('btn-play').addEventListener('click', () => startMatchmaking(selectedQueue === 'ranked'));
 document.getElementById('btn-cancel-mm').addEventListener('click', cancelMatchmaking);
 document.getElementById('btn-create-lobby').addEventListener('click', createLobby);
 document.getElementById('btn-join-lobby').addEventListener('click', joinByCode);
