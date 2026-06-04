@@ -446,6 +446,18 @@ let selectedWeapon = 'ar';
 let pendingInput = { dash:false, edit:false, reset:false, reload:false, mini:false, bigpot:false };
 const isSimMode = () => gameMode === 'vsbot' || gameMode === 'survival' || gameMode === 'freebuild';
 
+// ─── Authoritative server client (online) ────────────────────────────────────
+const GAME_SERVER = 'wss://boxfighting-production.up.railway.app';
+let serverMode = false;       // true while connected to the authoritative server
+let netWS = null;             // WebSocket to the game server
+let netState = null;          // latest authoritative snapshot state
+let netPlayers = {};          // id -> interpolated render entity
+let netSeq = 0;               // input sequence (for P3 reconciliation)
+let onlineMyId = null;        // my server player id
+let usernamesById = {};
+let prevLocalX = 0, prevLocalY = 0;
+const usesInputModel = () => isSimMode() || serverMode;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENTITY FACTORY
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1226,9 +1238,9 @@ function drawEntity(e, bodyColor) {
   if (e.dead || e.hp <= 0) return;
   const now = performance.now();
 
-  // Dash ring (player only) — dashReadyAt (sim) or dashCd (legacy online)
+  // Dash ring (player only) — perf-time across sim/server/legacy
   if (!e.isBot) {
-    const readyAt = e.dashReadyAt ?? e.dashCd ?? 0;
+    const readyAt = e._dashReadyPerf ?? e.dashReadyAt ?? e.dashCd ?? 0;
     const dashPct = Math.max(0, Math.min(1, (now - (readyAt - DASH_CD)) / DASH_CD));
     const ready   = now >= readyAt;
     ctx.beginPath();
@@ -1272,7 +1284,11 @@ function drawEntity(e, bodyColor) {
 
   // Potion-drinking ring (player only) — sim uses per-player potionEnd; legacy online uses global usingPotion
   let potP = 0, potType = null;
-  if (e.potionEnd) {
+  if (e._potionEndPerf) {
+    potType = e._potionType;
+    const dur = potType === 'mini' ? MINI_USE_MS : BIG_USE_MS;
+    potP = 1 - (e._potionEndPerf - now) / dur;
+  } else if (e.potionEnd) {
     potType = e.potionType;
     const dur = potType === 'mini' ? MINI_USE_MS : BIG_USE_MS;
     potP = 1 - (e.potionEnd - now) / dur;
@@ -1551,7 +1567,7 @@ function render() {
   ctx.fillStyle='#bb88ff'; ctx.fillText(`◍ ${player.bigPots}`, hudX+104, 60);
 
   // Dash pip
-  const dashReady = performance.now() >= (player.dashReadyAt ?? player.dashCd ?? 0);
+  const dashReady = performance.now() >= (player._dashReadyPerf ?? player.dashReadyAt ?? player.dashCd ?? 0);
   ctx.fillStyle = dashReady ? '#44ccff' : '#2a3a4a';
   ctx.beginPath(); ctx.arc(hudX+5, 74, 4, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle=dashReady?'#aaeeff':'#445566'; ctx.font='9px monospace';
@@ -1677,8 +1693,7 @@ function applyEvents(events) {
 }
 
 // Gather the local player's input for this tick.
-function gatherInput() {
-  const p = simState.players[MY_ID];
+function gatherInput(p) {
   const kb = keybinds;
   let mx = 0, my = 0;
   if (keys[kb.up]    || keys['ArrowUp'])    my -= 1;
@@ -1713,7 +1728,7 @@ function stepSim(scaledDt) {
   const p = simState.players[MY_ID];
   if (!p) return;
 
-  const { input, locked } = gatherInput();
+  const { input, locked } = gatherInput(p);
   const preX = p.x, preY = p.y;
 
   const events = simStep(simState, { [MY_ID]: input }, performance.now(), scaledDt);
@@ -1751,6 +1766,179 @@ function stepSim(scaledDt) {
   syncSimGlobals();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUTHORITATIVE SERVER CLIENT (online)
+// ═══════════════════════════════════════════════════════════════════════════════
+function startServerGame(assignments, mode) {
+  const me = assignments.find(a => a.userId === currentUser.id);
+  if (!me) return;
+  myTeam = me.team;
+  onlineMyId = currentUser.id;
+  usernamesById = {};
+  assignments.forEach(a => { usernamesById[a.userId] = a.username; });
+
+  gameMode = 'online'; serverMode = true; gameOver = false;
+  walls = {}; bullets = []; particles = []; explosions = []; afterimages = []; floatingTexts = []; killfeed = [];
+  netState = null; netPlayers = {}; netSeq = 0;
+  player = null; bots = [];
+  selectedWeapon = 'ar';
+  pendingInput = { dash:false, edit:false, reset:false, reload:false, mini:false, bigpot:false };
+  timeScale = 1.0; slowMoTimer = 0; shake.intensity = 0; playerHitFlash = 0; killFlash = 0; combo = 0; bannerText = null;
+
+  const sx = me.team === 0 ? CELL*2.5 : W - CELL*2.5, sy = H/2;
+  virtualMouse.x = sx + (me.team === 0 ? 120 : -120);
+  virtualMouse.y = sy;
+  prevLocalX = sx; prevLocalY = sy;
+
+  document.getElementById('menu').classList.remove('show');
+  document.getElementById('in-lobby').classList.remove('show');
+  document.getElementById('result').classList.remove('show');
+
+  const ind = document.getElementById('online-indicator');
+  ind.textContent = `● ONLINE · ${mode}`; ind.classList.add('show');
+
+  netWS = new WebSocket(GAME_SERVER);
+  netWS.onopen = () => netWS.send(JSON.stringify({
+    type: 'join', roomId: currentLobby.id, playerId: currentUser.id,
+    username: currentProfile.username, team: myTeam, mode,
+  }));
+  netWS.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } handleServerMsg(m); };
+  netWS.onclose = () => { if (serverMode && !gameOver) showServerResult('lose', 'Disconnected'); };
+  netWS.onerror = () => {};
+}
+
+function handleServerMsg(m) {
+  if (m.type === 'snapshot') ingestSnapshot(m);
+  else if (m.type === 'gameover') {
+    const won = m.winner === myTeam;
+    showServerResult(won ? 'win' : (m.winner === 'draw' ? 'draw' : 'lose'), '');
+  } else if (m.type === 'start') {
+    canvas.requestPointerLock();
+  }
+}
+
+function ingestSnapshot(m) {
+  netState = m.state;
+  for (const id in m.state.players) {
+    const sp = m.state.players[id];
+    let rp = netPlayers[id];
+    if (!rp) rp = netPlayers[id] = { id, x: sp.x, y: sp.y, radius: P_RADIUS, isBot: id !== onlineMyId, isRemote: id !== onlineMyId, username: usernamesById[id] || '' };
+    rp.tx = sp.x; rp.ty = sp.y;
+    rp.aimAngle = sp.aimAngle; rp.hp = sp.hp; rp.shield = sp.shield; rp.dead = sp.dead;
+    rp.weapon = sp.weapon; rp.team = sp.team; rp.minis = sp.minis; rp.bigPots = sp.bigPots;
+    rp.materials = sp.materials === -1 ? Infinity : sp.materials;
+    // NOTE: server timer fields are sim-time; client animations are driven by events below.
+  }
+  for (const id in netPlayers) if (!m.state.players[id]) delete netPlayers[id];
+  applyServerEvents(m.events);
+}
+
+function applyServerEvents(events) {
+  for (const e of events) {
+    const rp = e.id ? netPlayers[e.id] : null;
+    switch (e.t) {
+      case 'build':      spawnParticles(e.x, e.y, e.team === 1 ? '#aa66ff' : '#5588ff', 4); break;
+      case 'bulletWall': spawnParticles(e.x, e.y, '#bb7722', 3); break;
+      case 'wallBreak':  spawnParticles(e.x, e.y, '#ffaa33', 7); break;
+      case 'explosion':  spawnExplosionVisual(e.x, e.y); break;
+      case 'melee':      if (rp) rp.swingStart = performance.now(); doShake(4); break;
+      case 'dash':       if (rp) { rp._dashReadyPerf = performance.now() + DASH_CD; spawnParticles(rp.x, rp.y, '#88aaff', 8, 0.8); } break;
+      case 'reload':     if (e.id === onlineMyId && rp) spawnFloat(rp.x, rp.y - 22, 'RELOADING', '#ffcc44', 12); break;
+      case 'potionStart':if (rp) { rp._potionEndPerf = performance.now() + (e.type === 'mini' ? MINI_USE_MS : BIG_USE_MS); rp._potionType = e.type; } break;
+      case 'potionDone': {
+        if (!rp) break;
+        rp._potionEndPerf = 0; rp._potionType = null;
+        const amt = e.type === 'mini' ? MINI_AMOUNT : BIG_POT_AMOUNT;
+        spawnFloat(rp.x, rp.y - 30, `+${amt} SHIELD`, e.type === 'mini' ? '#88ccff' : '#bb88ff', 14);
+        spawnParticles(rp.x, rp.y, e.type === 'mini' ? '#88ccff' : '#bb88ff', 12, 0.8);
+        break;
+      }
+      case 'hit': {
+        const t = netPlayers[e.targetId];
+        if (t) t._potionEndPerf = 0;
+        if (e.targetId === onlineMyId) {
+          playerHitFlash = 1; doShake(5); combo = 0;
+          if (t) spawnFloat(t.x, t.y - 28, `-${Math.ceil(e.dmg)}`, e.shieldOnly ? '#88ccff' : '#ff4444', 14);
+        } else if (e.sourceId === onlineMyId && t) {
+          addComboHit(t.x, t.y);
+          spawnFloat(t.x, t.y - 28, String(Math.ceil(e.dmg)), '#fff', 14);
+        }
+        break;
+      }
+      case 'kill': {
+        if (e.targetId === onlineMyId) {
+          doShake(12); playerHitFlash = 1;
+          spawnParticles(e.x, e.y, '#4488ff', 20); spawnParticles(e.x, e.y, '#fff', 8); triggerSlowMo(650);
+        } else {
+          triggerSlowMo(650); killFlash = 1; doShake(8);
+          spawnParticles(e.x, e.y, '#ff5533', 22); spawnParticles(e.x, e.y, '#ffcc00', 10);
+          spawnFloat(e.x, e.y - 45, 'ELIMINATED!', '#44ff88', 18);
+          if (e.sourceId === onlineMyId && e.weapon) killfeed.unshift({ text: `You eliminated [${e.weapon.toUpperCase()}]`, life: 4500 });
+        }
+        break;
+      }
+    }
+  }
+}
+
+function syncNetGlobals() {
+  if (!netState) return;
+  player  = netPlayers[onlineMyId];
+  walls   = netState.walls;
+  bullets = netState.bullets;
+  bots    = Object.values(netPlayers).filter(p => p.id !== onlineMyId);
+}
+
+// One online frame: send input, interpolate, sync render globals.
+function stepServer(scaledDt) {
+  const lp = netPlayers[onlineMyId];
+  if (!lp) return;
+
+  // Send input
+  if (netWS && netWS.readyState === WebSocket.OPEN && !lp.dead) {
+    const { input } = gatherInput(lp);
+    netWS.send(JSON.stringify({ type: 'input', seq: netSeq++, input }));
+  }
+  pendingInput.dash = pendingInput.edit = pendingInput.reset =
+    pendingInput.reload = pendingInput.mini = pendingInput.bigpot = false;
+
+  // Interpolate everyone toward their latest authoritative position
+  const k = Math.min(1, 0.30 * scaledDt / FRAME_MS);
+  for (const id in netPlayers) {
+    const rp = netPlayers[id];
+    if (rp.tx === undefined) continue;
+    rp.x += (rp.tx - rp.x) * k;
+    rp.y += (rp.ty - rp.y) * k;
+  }
+
+  // Pan the aim cursor with the local player's movement (keeps aim stable)
+  if (document.pointerLockElement === canvas) {
+    virtualMouse.x += lp.x - prevLocalX;
+    virtualMouse.y += lp.y - prevLocalY;
+    const cdx = virtualMouse.x - lp.x, cdy = virtualMouse.y - lp.y;
+    const cd = Math.sqrt(cdx * cdx + cdy * cdy) || 1;
+    if (cd < 50) { virtualMouse.x = lp.x + cdx / cd * 50; virtualMouse.y = lp.y + cdy / cd * 50; }
+  }
+  prevLocalX = lp.x; prevLocalY = lp.y;
+
+  if (performance.now() < (lp._dashReadyPerf ?? 0) - DASH_CD + DASH_DUR && Math.random() > 0.5)
+    afterimages.push({ x: lp.x, y: lp.y, life: 10, maxLife: 10 });
+
+  syncNetGlobals();
+}
+
+function showServerResult(outcome, sub) {
+  if (gameOver) return;
+  gameOver = true; serverMode = false;
+  document.exitPointerLock();
+  if (netWS) { try { netWS.close(); } catch {} netWS = null; }
+  const el = document.getElementById('resultText');
+  el.textContent = outcome === 'win' ? 'YOU WIN' : outcome === 'draw' ? 'DRAW' : 'YOU LOSE';
+  el.style.color = outcome === 'win' ? '#44ff88' : outcome === 'draw' ? '#ddaa22' : '#ff4444';
+  document.getElementById('resultSub').textContent = sub || '';
+  document.getElementById('result').classList.add('show');
+}
+
 function loop(timestamp) {
   const rawDt    = Math.min(timestamp - lastTime, 50);
   lastTime       = timestamp;
@@ -1784,7 +1972,9 @@ function loop(timestamp) {
         stepSim(scaledDt);                 // offline: shared/sim.js authority
         if (gameMode === 'survival') checkWaveClear();
         checkGameOver();
-      } else {                             // online: legacy client-auth path
+      } else if (serverMode) {
+        stepServer(scaledDt);              // online: authoritative server
+      } else {                             // legacy fallback (unused)
         updatePlayer(scaledDt);
         interpRemote(scaledDt);
         updateBullets();
@@ -1829,6 +2019,7 @@ function init(mode) {
   combo=0; totalKills=0; bannerText=null; usingPotion=null;
 
   selectedWeapon = 'ar';
+  serverMode = false;
   pendingInput = { dash:false, edit:false, reset:false, reload:false, mini:false, bigpot:false };
 
   if (mode === 'vsbot' || mode === 'survival' || mode === 'freebuild') {
@@ -1902,9 +2093,9 @@ document.addEventListener('keydown', e => {
 
   // Weapon select (1–6)
   const wIdx = [kb.weapon1,kb.weapon2,kb.weapon3,kb.weapon4,kb.weapon5,kb.weapon6].indexOf(e.code);
-  if (wIdx >= 0) { if (isSimMode()) selectedWeapon = WEAPON_ORDER[wIdx]; else player.weapon = WEAPON_ORDER[wIdx]; }
+  if (wIdx >= 0) { if (usesInputModel()) selectedWeapon = WEAPON_ORDER[wIdx]; else player.weapon = WEAPON_ORDER[wIdx]; }
 
-  if (isSimMode()) {
+  if (usesInputModel()) {
     // Offline: convert keypresses into one-shot sim inputs
     if (e.code === kb.edit)   pendingInput.edit   = true;
     if (e.code === kb.reset)  pendingInput.reset  = true;
@@ -1912,7 +2103,7 @@ document.addEventListener('keydown', e => {
     if (e.code === kb.mini)   pendingInput.mini   = true;
     if (e.code === kb.bigpot) pendingInput.bigpot = true;
     if (e.code === kb.dash)  { e.preventDefault(); pendingInput.dash = true; }
-    if (e.code === kb.clear && gameMode === 'freebuild') { simState.walls = {}; simState.bullets = []; syncSimGlobals(); }
+    if (e.code === kb.clear && gameMode === 'freebuild' && simState) { simState.walls = {}; simState.bullets = []; syncSimGlobals(); }
   } else {
     // Online: legacy direct path
     if (e.code === kb.edit)   tryEdit(player);
@@ -1965,9 +2156,9 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
   if (gameMode==='menu') return;
-  const cur = isSimMode() ? selectedWeapon : player.weapon;
+  const cur = usesInputModel() ? selectedWeapon : player.weapon;
   const next = WEAPON_ORDER[(WEAPON_ORDER.indexOf(cur)+(e.deltaY>0?1:-1)+WEAPON_ORDER.length)%WEAPON_ORDER.length];
-  if (isSimMode()) selectedWeapon = next; else player.weapon = next;
+  if (usesInputModel()) selectedWeapon = next; else player.weapon = next;
 },{passive:false});
 
 // Difficulty buttons
@@ -2039,6 +2230,8 @@ function interpRemote(scaledDt) {
 function cleanupOnline() {
   if (stateInterval) { clearInterval(stateInterval); stateInterval = null; }
   if (lobbyChannel)  { sb.removeChannel(lobbyChannel); lobbyChannel = null; }
+  if (netWS) { try { netWS.close(); } catch {} netWS = null; }
+  serverMode = false; netState = null; netPlayers = {};
   currentLobby = null; remotePlayers = {}; amIReady = false;
   document.getElementById('online-indicator').classList.remove('show');
 }
@@ -2313,37 +2506,8 @@ function broadcastGameStart(players, mode) {
 
 // ─── Game start handler ───────────────────────────────────────────────────────
 function handleGameStart({ assignments, mode }) {
-  document.getElementById('in-lobby').classList.remove('show');
-  const me = assignments.find(a => a.userId === currentUser.id);
-  if (!me) return;
-  myTeam = me.team;
-  init('online');
-  player.x = me.spawnX; player.y = me.spawnY;
-  virtualMouse.x = me.spawnX + (me.team===0?120:-120);
-  virtualMouse.y = me.spawnY;
-
-  // Create remote player entities
-  bots = [];
-  remotePlayers = {};
-  for (const a of assignments) {
-    if (a.userId === currentUser.id) continue;
-    const rp = makeEntity(a.spawnX, a.spawnY, true);
-    rp.id = a.userId; rp.isRemote = true;
-    rp.username = a.username; rp.team = a.team;
-    rp.targetX = a.spawnX; rp.targetY = a.spawnY;
-    bots.push(rp); remotePlayers[a.userId] = rp;
-  }
-
-  // Mark lobby active
-  if (currentLobby && currentUser.id === currentLobby.host_id)
-    sb.from('lobbies').update({ status:'active' }).eq('id', currentLobby.id).then(()=>{});
-
-  stateInterval = setInterval(broadcastMyState, 50);
-  canvas.requestPointerLock();
-
-  const ind = document.getElementById('online-indicator');
-  ind.textContent = `● ONLINE · ${mode}`;
-  ind.classList.add('show');
+  // Connect to the authoritative game server (the SERVER simulates the match).
+  startServerGame(assignments, mode);
 }
 
 // ─── State broadcast ──────────────────────────────────────────────────────────
