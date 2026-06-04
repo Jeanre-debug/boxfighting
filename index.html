@@ -169,6 +169,13 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
 #settings { overflow-y:auto; }
 .settings-box { width:420px; max-height:88vh; overflow-y:auto; }
 .settings-title { font-size:14px; font-weight:700; letter-spacing:6px; color:var(--text); text-align:center; }
+.sens-row { display:flex; flex-direction:column; gap:8px; padding:4px 0 8px; }
+.sens-head { display:flex; justify-content:space-between; align-items:center; }
+.sens-head span:first-child { font-size:12px; color:var(--muted); font-weight:600; letter-spacing:1px; }
+#sens-val { font-size:13px; color:var(--blue); font-weight:800; font-variant-numeric:tabular-nums; }
+.sens-slider { -webkit-appearance:none; appearance:none; width:100%; height:6px; border-radius:99px; background:var(--bg); border:1px solid var(--border); outline:none; cursor:pointer; }
+.sens-slider::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px; border-radius:50%; background:var(--blue); border:2px solid #0b1024; box-shadow:0 0 10px rgba(59,130,246,0.6); cursor:pointer; }
+.sens-slider::-moz-range-thumb { width:18px; height:18px; border-radius:50%; background:var(--blue); border:2px solid #0b1024; cursor:pointer; }
 .bind-group { font-size:9px; color:var(--ghost); letter-spacing:4px; font-weight:700; margin:10px 0 4px; border-top:1px solid var(--border); padding-top:8px; }
 .bind-row   { display:flex; align-items:center; justify-content:space-between; padding:5px 0; }
 .bind-label { font-size:12px; color:var(--muted); font-weight:500; }
@@ -489,7 +496,12 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
 
   <div id="settings" class="overlay">
     <div class="settings-box">
-      <div class="settings-title">KEYBINDS</div>
+      <div class="settings-title">SETTINGS</div>
+      <div class="sens-row">
+        <div class="sens-head"><span>MOUSE SENSITIVITY</span><span id="sens-val">1.40</span></div>
+        <input type="range" id="sens-slider" class="sens-slider" min="0.2" max="4" step="0.05" value="1.4">
+      </div>
+      <div class="bind-group">KEYBINDS</div>
       <div id="keybind-list"></div>
       <div class="settings-footer">
         <button id="btn-defaults">RESET DEFAULTS</button>
@@ -561,6 +573,7 @@ const BIND_DEFS = [
   { key:'weapon5',label:'Weapon 5' }, { key:'weapon6',label:'Weapon 6' },
 ];
 let keybinds = { ...DEFAULT_BINDS };
+let mouseSensitivity = 1.4;   // pointer-lock aim multiplier
 let listeningFor = null;   // action key being rebound
 let settingsFrom = 'menu'; // 'menu' | 'pause' — where to return
 
@@ -801,6 +814,7 @@ function keyLabel(code) {
 }
 function loadKeybinds() {
   try { const s = localStorage.getItem('bf_binds'); if (s) keybinds = { ...DEFAULT_BINDS, ...JSON.parse(s) }; } catch(e) {}
+  try { const v = parseFloat(localStorage.getItem('bf_sens')); if (v >= 0.2 && v <= 4) mouseSensitivity = v; } catch(e) {}
 }
 function saveKeybinds() {
   try { localStorage.setItem('bf_binds', JSON.stringify(keybinds)); } catch(e) {}
@@ -808,6 +822,9 @@ function saveKeybinds() {
 function openSettings(from) {
   settingsFrom = from;
   listeningFor = null;
+  const sl = document.getElementById('sens-slider');
+  sl.value = mouseSensitivity;
+  document.getElementById('sens-val').textContent = mouseSensitivity.toFixed(2);
   renderSettingsUI();
   document.getElementById('settings').classList.add('show');
 }
@@ -2572,8 +2589,8 @@ document.addEventListener('keyup', e => { keys[e.code]=false; });
 canvas.addEventListener('mousemove', e => {
   if (document.pointerLockElement === canvas) {
     // Shift world-space cursor — X and Y both move it naturally
-    virtualMouse.x += e.movementX * 1.4;
-    virtualMouse.y += e.movementY * 1.4;
+    virtualMouse.x += e.movementX * mouseSensitivity;
+    virtualMouse.y += e.movementY * mouseSensitivity;
   } else {
     const r = canvas.getBoundingClientRect();
     mouse.x = (e.clientX - r.left) * (W / r.width);
@@ -2645,7 +2662,17 @@ document.getElementById('btn-settings-pause').addEventListener('click', () => { 
 document.getElementById('btn-exit-game').addEventListener('click', () => { document.getElementById('pause').classList.remove('show'); showMenu(); });
 document.getElementById('btn-settings-back').addEventListener('click',  closeSettings);
 document.getElementById('btn-defaults').addEventListener('click', () => {
-  keybinds = { ...DEFAULT_BINDS }; saveKeybinds(); listeningFor = null; renderSettingsUI();
+  keybinds = { ...DEFAULT_BINDS }; mouseSensitivity = 1.4;
+  try { localStorage.setItem('bf_sens', '1.4'); } catch(e) {}
+  saveKeybinds(); listeningFor = null;
+  document.getElementById('sens-slider').value = 1.4;
+  document.getElementById('sens-val').textContent = '1.40';
+  renderSettingsUI();
+});
+document.getElementById('sens-slider').addEventListener('input', (e) => {
+  mouseSensitivity = parseFloat(e.target.value);
+  document.getElementById('sens-val').textContent = mouseSensitivity.toFixed(2);
+  try { localStorage.setItem('bf_sens', String(mouseSensitivity)); } catch(err) {}
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
