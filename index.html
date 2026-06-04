@@ -1943,12 +1943,11 @@ function stepServer(scaledDt) {
   const now = PERF();
   const locked = document.pointerLockElement === canvas;
 
-  // Live latency readout
+  // Live latency readout (always visible during a match)
   const ind = document.getElementById('online-indicator');
-  if (locked) {
-    const col = netPing < 60 ? '#4ade80' : netPing < 120 ? '#ddaa22' : '#ff5544';
-    ind.innerHTML = `● ${onlineMode.toUpperCase()} · <span style="color:${col}">${netPing}ms</span>`;
-  }
+  const col = netPing < 60 ? '#4ade80' : netPing < 120 ? '#ddaa22' : '#ff5544';
+  ind.innerHTML = `● ${(onlineMode||'1v1').toUpperCase()} · <span style="color:${col}">${netPing}ms</span>`
+    + (locked ? '' : ' · <span style="color:#888">click to lock</span>');
 
   const { input } = gatherInput(predicted);   // aim derived from predicted position
   predicted.aimAngle = input.aimAngle;
