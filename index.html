@@ -296,12 +296,13 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
 
       <div id="rank-badge-slot" style="display:flex;justify-content:center;margin:2px 0"></div>
 
-      <div style="font-size:9px;color:var(--ghost);letter-spacing:4px;font-weight:700">RANKED — fight players your rank</div>
+      <div style="font-size:9px;color:var(--ghost);letter-spacing:4px;font-weight:700">QUICK MATCH</div>
       <div class="mode-pick">
         <button class="diff-btn sel" data-m="1v1">1v1</button>
         <button class="diff-btn" data-m="2v2">2v2</button>
       </div>
-      <button class="prim-btn" id="btn-quick-match">RANKED MATCH</button>
+      <button class="prim-btn" id="btn-ranked-match">RANKED MATCH</button>
+      <button class="sm-btn" id="btn-casual-match" style="width:100%;padding:11px 0">CASUAL MATCH</button>
 
       <div style="height:1px;background:var(--border);margin:2px 0"></div>
 
@@ -524,9 +525,12 @@ function updateRankUI() {
 }
 
 // Matchmaking / ranked match state
-let isMatchmade = false;      // true for ranked random matches (don't persist lobby)
+let isMatchmade = false;      // true for any quick match (don't persist lobby)
+let mmRanked = true;          // current queue: ranked vs casual
+let matchRanked = false;      // the match in progress is ranked (affects MMR)
 let matchOppRating = 300;     // opponent (avg enemy) rating for Elo
 let resultWasRanked = false;  // result screen came from a ranked match
+let authReturnTo = 'menu';    // where to go after a successful sign-in
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENTITY FACTORY
@@ -2095,7 +2099,7 @@ function showServerResult(outcome, sub) {
   const rankEl = document.getElementById('result-rank');
   rankEl.innerHTML = '';
   if (isMatchmade) {
-    if (outcome !== 'draw') {
+    if (matchRanked && outcome !== 'draw') {
       const res = applyRankedResult(outcome === 'win');
       const sign = res.delta >= 0 ? '+' : '';
       let promo = '';
@@ -2376,9 +2380,9 @@ document.getElementById('btn-vsbot').addEventListener('click',    ()=>startGame(
 document.getElementById('btn-survival').addEventListener('click',  ()=>startGame('survival'));
 document.getElementById('btn-freebuild').addEventListener('click', ()=>startGame('freebuild'));
 document.getElementById('btn-again').addEventListener('click', () => {
-  if (resultWasRanked) {                                  // NEW MATCH → re-queue ranked
+  if (resultWasRanked) {                                  // NEW MATCH → re-queue same type
     document.getElementById('result').classList.remove('show');
-    startMatchmaking();
+    startMatchmaking(mmRanked);
   } else if (lastWasOnline && currentLobby) {
     returnToLobby();                                       // rematch in the same private lobby
   } else {
@@ -2479,13 +2483,7 @@ async function doSignIn() {
     const { data, error } = await sb.auth.signInWithPassword({ email, password: pass });
     clearTimeout(timer);
     if (error) { setAuthErr(error.message); return; }
-    currentUser = data.user;
-    // Pull username directly from JWT metadata — no extra DB call needed
-    const username = data.user.user_metadata?.username || data.user.email.split('@')[0];
-    currentProfile = { id: data.user.id, username };
-    document.getElementById('online-username').textContent = username;
-    document.getElementById('auth').classList.remove('show');
-    document.getElementById('lobby-screen').classList.add('show');
+    await afterAuth(data.user);   // sets profile + rating, navigates per authReturnTo
   } catch (e) {
     clearTimeout(timer);
     setAuthErr(e.message || 'Something went wrong — try again.');
@@ -2539,7 +2537,7 @@ async function afterAuth(user) {
   currentProfile = { id: user.id, username, rating: 300, wins: 0, losses: 0 };
   document.getElementById('online-username').textContent = username;
   document.getElementById('auth').classList.remove('show');
-  document.getElementById('lobby-screen').classList.add('show');
+  document.getElementById(authReturnTo === 'lobby' ? 'lobby-screen' : 'menu').classList.add('show');
   updateRankUI();
   // Pull ranked stats in the background (defaults stand if columns/row missing)
   sb.from('profiles').select('rating,wins,losses').eq('id', user.id).single().then(({ data }) => {
@@ -2716,13 +2714,15 @@ function checkAllReady(presence) {
 // same persistent lobby spins up a clean server room (both clients share it).
 function buildStartPayload(players, mode) {
   const assignments = players.map(p => ({ userId: p.userId, username: p.username, team: p.team, rating: p.rating ?? 300 }));
-  return { assignments, mode, room: `${currentLobby.id}:${Date.now()}`, ranked: isMatchmade };
+  return { assignments, mode, room: `${currentLobby.id}:${Date.now()}`,
+           matchmade: isMatchmade, ranked: isMatchmade && mmRanked };
 }
 
 // ─── Game start handler ───────────────────────────────────────────────────────
-function handleGameStart({ assignments, mode, room, ranked }) {
+function handleGameStart({ assignments, mode, room, matchmade, ranked }) {
   if (serverMode) return;   // already started (guard against duplicate broadcasts)
-  if (typeof ranked === 'boolean') isMatchmade = ranked;
+  if (typeof matchmade === 'boolean') isMatchmade = matchmade;
+  matchRanked = !!ranked;
   startServerGame(assignments, mode, room);
 }
 
@@ -2794,11 +2794,12 @@ function mmTick() {
 
 // Quick Match built on the lobby system: find an open public lobby of this mode
 // with a free slot and join it (auto-ready); otherwise create one and wait.
-async function startMatchmaking() {
+async function startMatchmaking(ranked = true) {
   if (!currentUser || !currentProfile) return;
+  mmRanked = ranked;
   setLobbyErr('');
   document.getElementById('lobby-screen').classList.remove('show');
-  document.getElementById('mm-mode-label').textContent = mmMode.toUpperCase();
+  document.getElementById('mm-mode-label').textContent = `${ranked ? 'RANKED' : 'CASUAL'} · ${mmMode.toUpperCase()}`;
   document.getElementById('mm-status').textContent = 'Searching…';
   document.getElementById('mm-timer').textContent = '0:00';
   document.getElementById('matchmaking').classList.add('show');
@@ -2809,27 +2810,29 @@ async function startMatchmaking() {
   const maxP = mmMode === '2v2' ? 4 : 2;
   const freshSince = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   const { data: lobbies, error } = await sb.from('lobbies')
-    .select('id, host_id, mode, status, created_at, lobby_members(player_id, team)')
-    .eq('mode', mmMode).eq('status', 'waiting').gte('created_at', freshSince)
+    .select('id, host_id, mode, status, ranked, created_at, lobby_members(player_id, team)')
+    .eq('mode', mmMode).eq('status', 'waiting').eq('ranked', ranked).gte('created_at', freshSince)
     .order('created_at', { ascending: true }).limit(30);
   if (error) { await cancelMatchmaking(); setLobbyErr(error.message); return; }
 
-  // Fetch host ratings for rank-based pairing
+  // Ranked pairs by rating; casual matches anyone.
   const myRating = currentProfile.rating ?? 300;
-  const hostIds = (lobbies || []).map(l => l.host_id).filter(Boolean);
   const hostRating = {};
-  if (hostIds.length) {
-    const { data: profs } = await sb.from('profiles').select('id,rating').in('id', hostIds);
-    (profs || []).forEach(p => { hostRating[p.id] = p.rating ?? 300; });
+  if (ranked) {
+    const hostIds = (lobbies || []).map(l => l.host_id).filter(Boolean);
+    if (hostIds.length) {
+      const { data: profs } = await sb.from('profiles').select('id,rating').in('id', hostIds);
+      (profs || []).forEach(p => { hostRating[p.id] = p.rating ?? 300; });
+    }
   }
-  const ratingWindow = 250;   // pair within ±250 MMR (≈ within a tier or two)
+  const ratingWindow = 250;
 
   let target = null, joinTeam = 0;
   for (const lb of (lobbies || [])) {
     const members = lb.lobby_members || [];
     if (members.length === 0 || members.length >= maxP) continue;
     if (members.some(m => m.player_id === currentUser.id)) continue;
-    if (Math.abs((hostRating[lb.host_id] ?? 300) - myRating) > ratingWindow) continue;  // rank gate
+    if (ranked && Math.abs((hostRating[lb.host_id] ?? 300) - myRating) > ratingWindow) continue;
     const t0 = members.filter(m => m.team === 0).length;
     const t1 = members.filter(m => m.team === 1).length;
     joinTeam = t0 <= t1 ? 0 : 1;
@@ -2841,7 +2844,7 @@ async function startMatchmaking() {
   } else {
     const code = rndCode();
     const { data: lobby, error: ce } = await sb.from('lobbies')
-      .insert({ code, mode: mmMode, host_id: currentUser.id }).select().single();
+      .insert({ code, mode: mmMode, host_id: currentUser.id, ranked }).select().single();
     if (ce) { await cancelMatchmaking(); setLobbyErr(ce.message); return; }
     await joinMatchLobby(lobby.id, 0);
   }
@@ -2910,27 +2913,15 @@ async function enterMatchedLobby(lobbyId) {
 }
 
 // ─── Online button wiring ─────────────────────────────────────────────────────
-document.getElementById('btn-play-online').addEventListener('click', async () => {
-  // Show auth screen immediately — don't wait for the network call
+document.getElementById('btn-play-online').addEventListener('click', () => {
+  authReturnTo = 'lobby';
   document.getElementById('menu').classList.remove('show');
-  document.getElementById('auth').classList.add('show');
-  document.getElementById('auth-err').textContent = '';
-
-  try {
-    const { data: { user } } = await sb.auth.getUser();
-    if (user) {
-      currentUser = user;
-      if (!currentProfile) {
-        await afterAuth(user);           // sets profile + rating, shows lobby
-      } else {
-        document.getElementById('auth').classList.remove('show');
-        document.getElementById('lobby-screen').classList.add('show');
-        updateRankUI();
-      }
-    }
-    // else: not logged in, already on auth screen — do nothing
-  } catch (e) {
-    document.getElementById('auth-err').textContent = 'Connection error — check your network.';
+  if (currentUser && currentProfile) {
+    document.getElementById('lobby-screen').classList.add('show');
+    updateRankUI();
+  } else {
+    document.getElementById('auth-err').textContent = '';
+    document.getElementById('auth').classList.add('show');
   }
 });
 
@@ -2966,7 +2957,8 @@ document.querySelectorAll('[data-m]').forEach(btn => {
   });
 });
 
-document.getElementById('btn-quick-match').addEventListener('click', startMatchmaking);
+document.getElementById('btn-ranked-match').addEventListener('click', () => startMatchmaking(true));
+document.getElementById('btn-casual-match').addEventListener('click', () => startMatchmaking(false));
 document.getElementById('btn-cancel-mm').addEventListener('click', cancelMatchmaking);
 document.getElementById('btn-create-lobby').addEventListener('click', createLobby);
 document.getElementById('btn-join-lobby').addEventListener('click', joinByCode);
@@ -2992,6 +2984,27 @@ document.getElementById('btn-signout')?.addEventListener('click', async () => {
   document.getElementById('lobby-screen').classList.remove('show');
   document.getElementById('menu').classList.add('show');
 });
+
+// ─── Startup: restore session / prompt login on open ─────────────────────────
+(async () => {
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (session?.user) {
+      // Already signed in — load profile quietly, stay on the menu
+      currentUser = session.user;
+      const username = session.user.user_metadata?.username || session.user.email.split('@')[0];
+      currentProfile = { id: session.user.id, username, rating: 300, wins: 0, losses: 0 };
+      sb.from('profiles').select('rating,wins,losses').eq('id', session.user.id).single().then(({ data }) => {
+        if (data) { currentProfile.rating = data.rating ?? 300; currentProfile.wins = data.wins ?? 0; currentProfile.losses = data.losses ?? 0; updateRankUI(); }
+      }, () => {});
+    } else {
+      // Not signed in — prompt login on open (skippable to play offline)
+      authReturnTo = 'menu';
+      document.getElementById('menu').classList.remove('show');
+      document.getElementById('auth').classList.add('show');
+    }
+  } catch (e) { /* offline / network — just leave the menu up */ }
+})();
 
 // ─────────────────────────────────────────────────────────────────────────────
 loadKeybinds();
