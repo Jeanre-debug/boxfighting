@@ -87,6 +87,29 @@ function angleToSide(a) {
 function cellOf(e) { return { cx: Math.floor(e.x / C.CELL), cy: Math.floor(e.y / C.CELL) }; }
 function dashActive(p, now) { return now < p.dashEnd; }
 
+// Pure player movement for one tick — clock-agnostic (caller decides `dashing`).
+// Shared by the server (stepPlayer) AND client prediction so they stay identical.
+export function movePlayer(p, input, walls, dt, dashing) {
+  if (dashing) {
+    const sx = p.dashVx * dt / C.FRAME_MS / C.SUB_STEPS;
+    const sy = p.dashVy * dt / C.FRAME_MS / C.SUB_STEPS;
+    for (let i = 0; i < C.SUB_STEPS; i++) {
+      p.x += sx; resolveWalls(p, walls);
+      p.y += sy; resolveWalls(p, walls);
+    }
+  } else {
+    let mx = input.moveX || 0, my = input.moveY || 0;
+    const mag = Math.sqrt(mx * mx + my * my) || 1;
+    if (mx || my) { mx /= mag; my /= mag; }
+    const spd = C.P_SPEED * dt / C.FRAME_MS / C.SUB_STEPS;
+    for (let i = 0; i < C.SUB_STEPS; i++) {
+      p.x += mx * spd; resolveWalls(p, walls);
+      p.y += my * spd; resolveWalls(p, walls);
+    }
+  }
+  clampArena(p);
+}
+
 function hasLOS(state, x1, y1, x2, y2) {
   const dx = x2 - x1, dy = y2 - y1;
   const steps = Math.ceil(Math.sqrt(dx * dx + dy * dy) / 5);
@@ -301,26 +324,8 @@ function stepPlayer(state, p, input, now, dt, events) {
   if (input.mini)   startPotion(state, p, 'mini', now, events);
   if (input.bigpot) startPotion(state, p, 'big', now, events);
 
-  // Movement (dash overrides input movement)
-  let mx = input.moveX || 0, my = input.moveY || 0;
-  const mag = Math.sqrt(mx * mx + my * my) || 1;
-  if (mx || my) { mx /= mag; my /= mag; }
-
-  if (dashActive(p, now)) {
-    const sx = p.dashVx * dt / C.FRAME_MS / C.SUB_STEPS;
-    const sy = p.dashVy * dt / C.FRAME_MS / C.SUB_STEPS;
-    for (let i = 0; i < C.SUB_STEPS; i++) {
-      p.x += sx; resolveWalls(p, state.walls);
-      p.y += sy; resolveWalls(p, state.walls);
-    }
-  } else {
-    const spd = C.P_SPEED * dt / C.FRAME_MS / C.SUB_STEPS;
-    for (let i = 0; i < C.SUB_STEPS; i++) {
-      p.x += mx * spd; resolveWalls(p, state.walls);
-      p.y += my * spd; resolveWalls(p, state.walls);
-    }
-  }
-  clampArena(p);
+  // Movement — shared with client prediction so a predicted frame matches the server
+  movePlayer(p, input, state.walls, dt, dashActive(p, now));
 
   if (p.materials !== Infinity && p.materials < C.MAT_MAX)
     p.materials = Math.min(C.MAT_MAX, p.materials + C.MAT_REGEN * dt / C.FRAME_MS);

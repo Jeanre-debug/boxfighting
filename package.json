@@ -8,7 +8,8 @@
     "start": "node server/index.js",
     "server": "node server/index.js",
     "test:sim": "node server/sim-test.mjs",
-    "test:server": "node server/server-test.mjs"
+    "test:server": "node server/server-test.mjs",
+    "test:predict": "node server/predict-test.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

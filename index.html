@@ -362,7 +362,7 @@ import {
   closestPt, circleHitsRect, resolveRect, resolveWalls as resolveWallsPure,
   clampArena, wrapAngle, dist2,
 } from './shared/geometry.js';
-import { createState, addPlayer, removePlayer, step as simStep } from './shared/sim.js';
+import { createState, addPlayer, removePlayer, step as simStep, movePlayer } from './shared/sim.js';
 
 // Client wrapper: resolve against the global `walls` table.
 function resolveWalls(e) { resolveWallsPure(e, walls); }
@@ -457,6 +457,11 @@ let onlineMyId = null;        // my server player id
 let usernamesById = {};
 let prevLocalX = 0, prevLocalY = 0;
 const usesInputModel = () => isSimMode() || serverMode;
+
+// P3 client-side prediction (local player only)
+let predicted = null;         // { x, y, aimAngle, dashVx, dashVy, dashEnd, dashReadyAt }
+let inputHistory = [];        // unacked inputs to replay on reconcile
+const PERF = () => performance.now();
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENTITY FACTORY
@@ -1789,6 +1794,9 @@ function startServerGame(assignments, mode) {
   virtualMouse.x = sx + (me.team === 0 ? 120 : -120);
   virtualMouse.y = sy;
   prevLocalX = sx; prevLocalY = sy;
+  predicted = { x: sx, y: sy, radius: P_RADIUS, aimAngle: me.team === 0 ? 0 : Math.PI,
+                dashVx: 0, dashVy: 0, dashEnd: 0, dashReadyAt: 0 };
+  inputHistory = [];
 
   document.getElementById('menu').classList.remove('show');
   document.getElementById('in-lobby').classList.remove('show');
@@ -1830,6 +1838,7 @@ function ingestSnapshot(m) {
     // NOTE: server timer fields are sim-time; client animations are driven by events below.
   }
   for (const id in netPlayers) if (!m.state.players[id]) delete netPlayers[id];
+  reconcile(m.ackSeq);
   applyServerEvents(m.events);
 }
 
@@ -1881,48 +1890,84 @@ function applyServerEvents(events) {
   }
 }
 
+// Reconcile prediction against an authoritative snapshot: snap to the server's
+// position for our player, then replay every input the server hasn't processed.
+function reconcile(ackSeq) {
+  if (!predicted || !netState) return;
+  const sp = netState.players[onlineMyId];
+  if (!sp) return;
+  predicted.x = sp.x; predicted.y = sp.y;
+  if (typeof ackSeq === 'number') inputHistory = inputHistory.filter(h => h.seq > ackSeq);
+  for (const h of inputHistory) {
+    predicted.dashVx = h.dashVx; predicted.dashVy = h.dashVy;
+    movePlayer(predicted, h.input, netState.walls, h.dt, h.dashing);
+  }
+}
+
 function syncNetGlobals() {
   if (!netState) return;
-  player  = netPlayers[onlineMyId];
+  const lp = netPlayers[onlineMyId];
+  if (lp && predicted) {               // render local player from PREDICTION (instant)
+    lp.x = predicted.x; lp.y = predicted.y; lp.aimAngle = predicted.aimAngle;
+    lp._dashReadyPerf = predicted.dashReadyAt;
+  }
+  player  = lp;
   walls   = netState.walls;
   bullets = netState.bullets;
   bots    = Object.values(netPlayers).filter(p => p.id !== onlineMyId);
 }
 
-// One online frame: send input, interpolate, sync render globals.
+// One online frame: predict local movement instantly, send input, interpolate remotes.
 function stepServer(scaledDt) {
   const lp = netPlayers[onlineMyId];
-  if (!lp) return;
+  if (!lp || !predicted) return;
+  const now = PERF();
+  const locked = document.pointerLockElement === canvas;
 
-  // Send input
-  if (netWS && netWS.readyState === WebSocket.OPEN && !lp.dead) {
-    const { input } = gatherInput(lp);
-    netWS.send(JSON.stringify({ type: 'input', seq: netSeq++, input }));
+  const { input } = gatherInput(predicted);   // aim derived from predicted position
+  predicted.aimAngle = input.aimAngle;
+
+  if (!lp.dead && netWS && netWS.readyState === WebSocket.OPEN) {
+    const seq = netSeq++;
+    netWS.send(JSON.stringify({ type: 'input', seq, input }));
+
+    // Predict locally with the SAME physics the server uses
+    let dashing = now < predicted.dashEnd;
+    if (input.dash && now >= predicted.dashReadyAt && !dashing) {
+      let dx = input.moveX || 0, dy = input.moveY || 0;
+      if (dx === 0 && dy === 0) { dx = Math.cos(predicted.aimAngle); dy = Math.sin(predicted.aimAngle); }
+      const m = Math.sqrt(dx * dx + dy * dy) || 1;
+      predicted.dashVx = dx / m * DASH_SPD; predicted.dashVy = dy / m * DASH_SPD;
+      predicted.dashEnd = now + DASH_DUR; predicted.dashReadyAt = now + DASH_CD;
+      dashing = true;
+    }
+    const preX = predicted.x, preY = predicted.y;
+    movePlayer(predicted, input, netState ? netState.walls : {}, scaledDt, dashing);
+    inputHistory.push({ seq, input, dt: scaledDt, dashing, dashVx: predicted.dashVx, dashVy: predicted.dashVy });
+    if (inputHistory.length > 240) inputHistory.shift();
+
+    if (dashing && Math.random() > 0.4) afterimages.push({ x: predicted.x, y: predicted.y, life: 10, maxLife: 10 });
+
+    if (locked) {
+      virtualMouse.x += predicted.x - preX;
+      virtualMouse.y += predicted.y - preY;
+      const cdx = virtualMouse.x - predicted.x, cdy = virtualMouse.y - predicted.y;
+      const cd = Math.sqrt(cdx * cdx + cdy * cdy) || 1;
+      if (cd < 50) { virtualMouse.x = predicted.x + cdx / cd * 50; virtualMouse.y = predicted.y + cdy / cd * 50; }
+    }
   }
   pendingInput.dash = pendingInput.edit = pendingInput.reset =
     pendingInput.reload = pendingInput.mini = pendingInput.bigpot = false;
 
-  // Interpolate everyone toward their latest authoritative position
+  // Interpolate REMOTE players only (local uses prediction)
   const k = Math.min(1, 0.30 * scaledDt / FRAME_MS);
   for (const id in netPlayers) {
+    if (id === onlineMyId) continue;
     const rp = netPlayers[id];
     if (rp.tx === undefined) continue;
     rp.x += (rp.tx - rp.x) * k;
     rp.y += (rp.ty - rp.y) * k;
   }
-
-  // Pan the aim cursor with the local player's movement (keeps aim stable)
-  if (document.pointerLockElement === canvas) {
-    virtualMouse.x += lp.x - prevLocalX;
-    virtualMouse.y += lp.y - prevLocalY;
-    const cdx = virtualMouse.x - lp.x, cdy = virtualMouse.y - lp.y;
-    const cd = Math.sqrt(cdx * cdx + cdy * cdy) || 1;
-    if (cd < 50) { virtualMouse.x = lp.x + cdx / cd * 50; virtualMouse.y = lp.y + cdy / cd * 50; }
-  }
-  prevLocalX = lp.x; prevLocalY = lp.y;
-
-  if (performance.now() < (lp._dashReadyPerf ?? 0) - DASH_CD + DASH_DUR && Math.random() > 0.5)
-    afterimages.push({ x: lp.x, y: lp.y, life: 10, maxLife: 10 });
 
   syncNetGlobals();
 }
