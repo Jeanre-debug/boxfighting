@@ -180,6 +180,7 @@ export function startServer(port) {
       if (msg.type === 'join') handleJoin(ws, msg);
       else if (msg.type === 'input') handleInput(ws, msg);
       else if (msg.type === 'leave') handleLeave(ws);
+      else if (msg.type === 'ping') { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'pong', t: msg.t })); }
     });
     ws.on('close', () => handleLeave(ws));
     ws.on('error', () => {});

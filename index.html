@@ -457,6 +457,10 @@ let netSeq = 0;               // input sequence (for P3 reconciliation)
 let onlineMyId = null;        // my server player id
 let usernamesById = {};
 let prevLocalX = 0, prevLocalY = 0;
+let lastWasOnline = false;    // result-screen "play again" → rematch vs offline
+let currentRoom = null;       // per-match server room id
+let onlineMode = '1v1';
+let netPing = 0, pingInterval = null;
 const usesInputModel = () => isSimMode() || serverMode;
 
 // P3 client-side prediction (local player only)
@@ -1775,11 +1779,13 @@ function stepSim(scaledDt) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // AUTHORITATIVE SERVER CLIENT (online)
 // ═══════════════════════════════════════════════════════════════════════════════
-function startServerGame(assignments, mode) {
+function startServerGame(assignments, mode, room) {
   const me = assignments.find(a => a.userId === currentUser.id);
   if (!me) return;
   myTeam = me.team;
   onlineMyId = currentUser.id;
+  lastWasOnline = true;
+  currentRoom = room || currentLobby.id;
   usernamesById = {};
   assignments.forEach(a => { usernamesById[a.userId] = a.username; });
 
@@ -1803,28 +1809,37 @@ function startServerGame(assignments, mode) {
   document.getElementById('in-lobby').classList.remove('show');
   document.getElementById('result').classList.remove('show');
 
+  netPing = 0; onlineMode = mode;
   const ind = document.getElementById('online-indicator');
   ind.textContent = `● ONLINE · ${mode}`; ind.classList.add('show');
 
   netWS = new WebSocket(GAME_SERVER);
-  netWS.onopen = () => netWS.send(JSON.stringify({
-    type: 'join', roomId: currentLobby.id, playerId: currentUser.id,
-    username: currentProfile.username, team: myTeam, mode,
-  }));
+  netWS.onopen = () => {
+    netWS.send(JSON.stringify({
+      type: 'join', roomId: currentRoom, playerId: currentUser.id,
+      username: currentProfile.username, team: myTeam, mode,
+    }));
+    // Ping loop for the latency readout
+    if (pingInterval) clearInterval(pingInterval);
+    pingInterval = setInterval(() => {
+      if (netWS && netWS.readyState === WebSocket.OPEN) netWS.send(JSON.stringify({ type: 'ping', t: performance.now() }));
+    }, 1000);
+  };
   netWS.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } handleServerMsg(m); };
-  netWS.onclose = () => { if (serverMode && !gameOver) showServerResult('lose', 'Disconnected'); };
+  netWS.onclose = () => { if (pingInterval) { clearInterval(pingInterval); pingInterval = null; } if (serverMode && !gameOver) showServerResult('lose', 'Disconnected'); };
   netWS.onerror = () => {};
 }
 
 function handleServerMsg(m) {
   if (m.type === 'snapshot') ingestSnapshot(m);
+  else if (m.type === 'pong') netPing = Math.round(performance.now() - m.t);
   else if (m.type === 'gameover') {
     const won = m.winner === myTeam;
     showServerResult(won ? 'win' : (m.winner === 'draw' ? 'draw' : 'lose'), '');
   } else if (m.type === 'start') {
     // Pointer lock needs a user gesture — prompt a click instead of auto-locking.
     const ind = document.getElementById('online-indicator');
-    ind.textContent = '● ONLINE · click to lock aim'; ind.classList.add('show');
+    ind.textContent = '● click to lock aim'; ind.classList.add('show');
   }
 }
 
@@ -1928,6 +1943,13 @@ function stepServer(scaledDt) {
   const now = PERF();
   const locked = document.pointerLockElement === canvas;
 
+  // Live latency readout
+  const ind = document.getElementById('online-indicator');
+  if (locked) {
+    const col = netPing < 60 ? '#4ade80' : netPing < 120 ? '#ddaa22' : '#ff5544';
+    ind.innerHTML = `● ${onlineMode.toUpperCase()} · <span style="color:${col}">${netPing}ms</span>`;
+  }
+
   const { input } = gatherInput(predicted);   // aim derived from predicted position
   predicted.aimAngle = input.aimAngle;
 
@@ -1978,14 +2000,32 @@ function stepServer(scaledDt) {
 
 function showServerResult(outcome, sub) {
   if (gameOver) return;
-  gameOver = true; serverMode = false;
+  gameOver = true; serverMode = false; matchStarting = false;
   document.exitPointerLock();
   if (netWS) { try { netWS.close(); } catch {} netWS = null; }
+  if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
+  document.getElementById('online-indicator').classList.remove('show');
+  // NOTE: keep currentLobby + lobbyChannel alive so the lobby persists for a rematch.
   const el = document.getElementById('resultText');
   el.textContent = outcome === 'win' ? 'YOU WIN' : outcome === 'draw' ? 'DRAW' : 'YOU LOSE';
   el.style.color = outcome === 'win' ? '#44ff88' : outcome === 'draw' ? '#ddaa22' : '#ff4444';
   document.getElementById('resultSub').textContent = sub || '';
+  document.getElementById('btn-again').textContent = (currentLobby ? 'BACK TO LOBBY' : 'PLAY AGAIN');
   document.getElementById('result').classList.add('show');
+}
+
+// Return to the persistent waiting room (same lobby + presence channel) for a rematch.
+function returnToLobby() {
+  gameOver = false; serverMode = false; matchStarting = false; amIReady = false;
+  if (netWS) { try { netWS.close(); } catch {} netWS = null; }
+  if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
+  document.getElementById('result').classList.remove('show');
+  document.getElementById('online-indicator').classList.remove('show');
+  const btn = document.getElementById('btn-ready');
+  btn.textContent = 'READY'; btn.style.background = '';
+  document.getElementById('lobby-status-msg').textContent = 'Waiting for ready…';
+  document.getElementById('in-lobby').classList.add('show');
+  if (lobbyChannel) lobbyChannel.track({ userId: currentUser.id, username: currentProfile.username, team: myTeam, ready: false });
 }
 
 function loop(timestamp) {
@@ -2068,7 +2108,7 @@ function init(mode) {
   combo=0; totalKills=0; bannerText=null; usingPotion=null;
 
   selectedWeapon = 'ar';
-  serverMode = false;
+  serverMode = false; lastWasOnline = false;
   pendingInput = { dash:false, edit:false, reset:false, reload:false, mini:false, bigpot:false };
 
   if (mode === 'vsbot' || mode === 'survival' || mode === 'freebuild') {
@@ -2223,12 +2263,20 @@ function startGame(mode) { init(mode); canvas.requestPointerLock(); }
 document.getElementById('btn-vsbot').addEventListener('click',    ()=>startGame('vsbot'));
 document.getElementById('btn-survival').addEventListener('click',  ()=>startGame('survival'));
 document.getElementById('btn-freebuild').addEventListener('click', ()=>startGame('freebuild'));
-document.getElementById('btn-again').addEventListener('click', ()=>startGame(lastMode));
+document.getElementById('btn-again').addEventListener('click', () => {
+  if (lastWasOnline && currentLobby) returnToLobby();   // rematch in the same lobby
+  else startGame(lastMode);
+});
 document.getElementById('btn-menu').addEventListener('click', showMenu);
 
 // Click canvas to resume / acquire lock
 canvas.addEventListener('click', () => {
   if (gameMode !== 'menu' && !gameOver) canvas.requestPointerLock();
+});
+
+// Clicking the pause backdrop (not its buttons) re-locks the cursor and resumes.
+document.getElementById('pause').addEventListener('click', (e) => {
+  if (e.target.id === 'pause' && !gameOver) canvas.requestPointerLock();
 });
 
 // Pointer lock change → pause/resume
@@ -2535,16 +2583,17 @@ function checkAllReady(presence) {
   }
 }
 
-// Build the start payload (server assigns real spawns; teams/usernames matter here).
+// Build the start payload. `room` is a fresh per-match id so a rematch in the
+// same persistent lobby spins up a clean server room (both clients share it).
 function buildStartPayload(players, mode) {
   const assignments = players.map(p => ({ userId: p.userId, username: p.username, team: p.team }));
-  return { assignments, mode };
+  return { assignments, mode, room: `${currentLobby.id}:${Date.now()}` };
 }
 
 // ─── Game start handler ───────────────────────────────────────────────────────
-function handleGameStart({ assignments, mode }) {
+function handleGameStart({ assignments, mode, room }) {
   if (serverMode) return;   // already started (guard against duplicate broadcasts)
-  startServerGame(assignments, mode);
+  startServerGame(assignments, mode, room);
 }
 
 // ─── State broadcast ──────────────────────────────────────────────────────────
