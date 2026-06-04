@@ -98,7 +98,12 @@ export function startServer(port) {
     if (room.over) return;
     room.simNow += TICK_MS;
     const inputs = {};
-    for (const [pid, inp] of room.pending) inputs[pid] = inp;
+    for (const [pid, inp] of room.pending) {
+      inputs[pid] = inp;
+      // Ack the input ACTUALLY simulated this tick (not merely received) so the
+      // client replays exactly the right unacked inputs during reconciliation.
+      if (typeof inp.seq === 'number') room.lastAck[pid] = inp.seq;
+    }
 
     const events = simStep(room.state, inputs, room.simNow, TICK_MS);
 
@@ -156,8 +161,8 @@ export function startServer(port) {
       inp.mini   = inp.mini   || prev.mini;
       inp.bigpot = inp.bigpot || prev.bigpot;
     }
+    inp.seq = msg.seq;            // ack happens at tick time, when it's simulated
     room.pending.set(ws.playerId, inp);
-    if (typeof msg.seq === 'number') room.lastAck[ws.playerId] = msg.seq;
   }
 
   function handleLeave(ws) {
