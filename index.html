@@ -634,29 +634,57 @@ const PERF = () => performance.now();
 // ─── Ranked system ────────────────────────────────────────────────────────────
 // From scrap to master architect — the box-fight climb.
 const RANK_TIERS = [
-  { name:'SCRAP',     c1:'#b3a392', c2:'#7a6c58', icon:'📦' },
-  { name:'TIMBER',    c1:'#d99a4e', c2:'#8a5a1e', icon:'🪵' },
-  { name:'BRICK',     c1:'#e0664a', c2:'#9c2f1c', icon:'🧱' },
-  { name:'STONE',     c1:'#9aa3b0', c2:'#586271', icon:'🪨' },
-  { name:'IRON',      c1:'#8fa9d6', c2:'#41608f', icon:'⚔️' },
-  { name:'CRYSTAL',   c1:'#56e0ea', c2:'#1690a0', icon:'💎' },
-  { name:'OBSIDIAN',  c1:'#b083f5', c2:'#5e2fae', icon:'🔮' },
-  { name:'ARCHITECT', c1:'#ffe066', c2:'#d99a16', icon:'👑' },
+  { name:'BRONZE',   c1:'#cd7f4d', c2:'#8a4f28', icon:'🥉' },
+  { name:'SILVER',   c1:'#c8d2dc', c2:'#7d8896', icon:'🥈' },
+  { name:'GOLD',     c1:'#ffcf4d', c2:'#c79a16', icon:'🥇' },
+  { name:'PLATINUM', c1:'#4fe3d0', c2:'#1a9488', icon:'💠' },
+  { name:'DIAMOND',  c1:'#5bc8ff', c2:'#2176c4', icon:'💎' },
+  { name:'ELITE',    c1:'#ff6b9d', c2:'#b03060', icon:'🔥' },
+  { name:'CHAMPION', c1:'#ff8c3c', c2:'#c0531a', icon:'🏆' },
+  { name:'UNREAL',   c1:'#c77dff', c2:'#7b2fd6', icon:'🌌' },
 ];
-const RANK_BAND = 300;        // MMR per tier (3 divisions of 100)
+const RANK_BAND = 300;        // MMR per tier (3 stages of 100)
 function rankFromRating(r) {
   r = Math.max(0, r | 0);
   let idx = Math.floor(r / RANK_BAND); if (idx > 7) idx = 7;
   const tier = RANK_TIERS[idx];
-  if (idx === 7) return { idx, tier, name: tier.name, roman: '', rating: r };
   const within = r - idx * RANK_BAND;
-  const roman = within < 100 ? 'III' : within < 200 ? 'II' : 'I';
+  const roman = within < 100 ? 'III' : within < 200 ? 'II' : 'I';   // 3 stages per tier
   return { idx, tier, name: tier.name, roman, rating: r };
 }
+// Custom faceted-gem emblems per tier (no emojis). Distinct shape + color each.
+const RANK_SHAPES = [
+  '50,20 71,29 80,50 71,71 50,80 29,71 20,50 29,29',                         // BRONZE  octagon medallion
+  '24,30 76,30 50,84',                                                        // SILVER  triangle
+  '50,14 84,50 50,86 16,50',                                                  // GOLD    rhombus
+  '50,10 60,40 90,50 60,60 50,90 40,60 10,50 40,40',                          // PLATINUM 4-point star
+  '50,14 84,34 84,66 50,86 16,66 16,34',                                      // DIAMOND  hexagon
+  '50,10 62,40 90,40 67,58 76,88 50,68 24,88 33,58 10,40 38,40',              // ELITE    5-point star
+  '16,44 31,26 41,44 50,18 59,44 69,26 84,44 77,82 23,82',                    // CHAMPION crown
+  '50,8 73,40 58,92 42,92 27,40',                                            // UNREAL   crystal
+];
+let emblemUID = 0;
+function rankEmblemSVG(idx, size) {
+  const t = RANK_TIERS[idx], pts = RANK_SHAPES[idx];
+  const gid = 'rge' + (emblemUID++);
+  const blur = size > 60 ? 9 : size > 34 ? 5 : 3;
+  const shineY = idx === 1 ? 40 : 34;   // triangle sits lower
+  return `<svg viewBox="0 0 100 100" width="${size}" height="${size}" style="overflow:visible;display:block">
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="0.3" stop-color="${t.c1}"/>
+      <stop offset="1" stop-color="${t.c2}"/>
+    </linearGradient></defs>
+    <polygon points="${pts}" fill="url(#${gid})" stroke="${t.c1}" stroke-width="3.5" stroke-linejoin="round"
+      style="filter:drop-shadow(0 0 ${blur}px ${t.c1})"/>
+    <ellipse cx="50" cy="${shineY}" rx="13" ry="7" fill="#ffffff" opacity="0.28"/>
+  </svg>`;
+}
+
 function rankBadgeHTML(rating, big) {
   const rk = rankFromRating(rating);
   return `<div class="rank-badge ${big ? 'lg' : ''}" style="--c1:${rk.tier.c1};--c2:${rk.tier.c2}">
-    <span class="rank-ico">${rk.tier.icon}</span>
+    <span class="rank-ico">${rankEmblemSVG(rk.idx, big ? 42 : 26)}</span>
     <span class="rank-text"><span class="rk-name">${rk.name}${rk.roman ? ` <span class="rk-div">${rk.roman}</span>` : ''}</span>
     <span class="rk-mmr">${rk.rating} MMR</span></span></div>`;
 }
@@ -665,7 +693,7 @@ function updateRankUI() {
   const slot = document.getElementById('rank-badge-slot');
   if (slot) slot.innerHTML = rankBadgeHTML(currentProfile.rating ?? 300, false);
   const emblem = document.getElementById('lobby-emblem');
-  if (emblem) emblem.textContent = rankFromRating(currentProfile.rating ?? 300).tier.icon;
+  if (emblem) emblem.innerHTML = rankEmblemSVG(rankFromRating(currentProfile.rating ?? 300).idx, 120);
 }
 
 // Ranks / progression screen
@@ -682,10 +710,10 @@ function renderRanksScreen() {
 
   // Hero badge + progress toward next division/tier
   let progHTML;
-  if (rk.idx >= 7) {
+  if (rk.idx >= 7 && rk.roman === 'I') {
     progHTML = `<div class="rank-progress"><div class="rank-prog-bar"><div class="rank-prog-fill"
       style="width:100%;background:linear-gradient(90deg,${rk.tier.c2},${rk.tier.c1})"></div></div>
-      <div class="rank-prog-label">MAX TIER REACHED · ${r} MMR</div></div>`;
+      <div class="rank-prog-label">MAX RANK REACHED · ${r} MMR</div></div>`;
   } else {
     const bandStart = Math.floor(r / 100) * 100;
     const next = bandStart + 100;
@@ -713,7 +741,7 @@ function renderRanksScreen() {
     const range = i === 7 ? '2100+ MMR' : `${i * 300}–${i * 300 + 299}`;
     const cur = i === rk.idx;
     html += `<div class="ladder-row ${cur ? 'cur' : ''}" style="--rc:${t.c1}">
-      <span class="ladder-ico">${t.icon}</span>
+      <span class="ladder-ico">${rankEmblemSVG(i, 30)}</span>
       <span class="ladder-name">${t.name}</span>
       <span class="ladder-range">${range}</span>
       ${cur ? `<span class="ladder-you">${rk.roman || 'YOU'}</span>` : ''}</div>`;
