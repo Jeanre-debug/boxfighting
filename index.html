@@ -424,6 +424,7 @@ let remotePlayers = {};     // userId → bot entity in bots[]
 let myTeam = 0, lobbyModeSelected = '1v1';
 let stateInterval = null;
 let amIReady = false;
+let matchStarting = false;
 let shake = { intensity: 0 };
 let playerHitFlash = 0, killFlash = 0;
 let combo = 0, lastComboHit = 0;
@@ -2277,7 +2278,7 @@ function cleanupOnline() {
   if (lobbyChannel)  { sb.removeChannel(lobbyChannel); lobbyChannel = null; }
   if (netWS) { try { netWS.close(); } catch {} netWS = null; }
   serverMode = false; netState = null; netPlayers = {};
-  currentLobby = null; remotePlayers = {}; amIReady = false;
+  currentLobby = null; remotePlayers = {}; amIReady = false; matchStarting = false;
   document.getElementById('online-indicator').classList.remove('show');
 }
 
@@ -2421,7 +2422,7 @@ async function joinLobbyById(lobbyId, team) {
   const { error } = await sb.from('lobby_members')
     .upsert({ lobby_id: lobbyId, player_id: currentUser.id, team, ready: false }, { onConflict: 'lobby_id,player_id' });
   if (error) { setLobbyErr(error.message); return; }
-  currentLobby = lobby; myTeam = team; amIReady = false;
+  currentLobby = lobby; myTeam = team; amIReady = false; matchStarting = false;
   document.getElementById('lobby-screen').classList.remove('show');
   document.getElementById('lobby-code-disp').textContent = lobby.code;
   document.getElementById('mode-disp').textContent = lobby.mode.toUpperCase();
@@ -2441,8 +2442,10 @@ async function toggleReady() {
   amIReady = !amIReady;
   document.getElementById('btn-ready').textContent = amIReady ? 'UNREADY' : 'READY';
   document.getElementById('btn-ready').style.background = amIReady ? 'rgba(20,80,40,0.9)' : '';
-  await sb.from('lobby_members').update({ ready: amIReady }).eq('lobby_id', currentLobby.id).eq('player_id', currentUser.id);
+  // Broadcast presence FIRST (this drives the start handshake); DB write is best-effort.
   if (lobbyChannel) await lobbyChannel.track({ userId: currentUser.id, username: currentProfile.username, team: myTeam, ready: amIReady });
+  sb.from('lobby_members').update({ ready: amIReady })
+    .eq('lobby_id', currentLobby.id).eq('player_id', currentUser.id).then(()=>{}, ()=>{});
 }
 
 // ─── Lobby realtime subscription ──────────────────────────────────────────────
@@ -2473,7 +2476,7 @@ function renderLobbyPlayers(presence) {
   const list = document.getElementById('player-list');
   const mode = currentLobby?.mode || '1v1';
   const teams = mode === '2v2' ? [0, 1] : [0, 1];
-  const players = Object.values(presence).map(p => p[0] || p);
+  const players = Object.values(presence).map(a => Array.isArray(a) ? a[a.length - 1] : a);
   list.innerHTML = '';
 
   teams.forEach(team => {
@@ -2508,50 +2511,35 @@ function renderLobbyPlayers(presence) {
 }
 
 function checkAllReady(presence) {
+  if (matchStarting) return;
   const mode = currentLobby?.mode || '1v1';
   const required = mode === '2v2' ? 4 : 2;
-  const players = Object.values(presence).map(p => p[0] || p);
+  const players = Object.values(presence).map(a => Array.isArray(a) ? a[a.length - 1] : a);
   const allReady = players.length >= required && players.every(p => p.ready);
   if (!allReady) {
     document.getElementById('lobby-status-msg').textContent =
       `${players.length}/${required} players${players.length >= required ? ' — waiting for ready' : ''}`;
     return;
   }
-  // Host starts the game
+  // Host kicks off the match for everyone (broadcast reaches guests; host starts directly)
   if (currentLobby && currentUser.id === currentLobby.host_id) {
+    matchStarting = true;
     document.getElementById('lobby-status-msg').textContent = 'Starting…';
-    broadcastGameStart(players, mode);
+    const payload = buildStartPayload(players, mode);
+    netSend('game_start', payload);   // guests
+    handleGameStart(payload);         // host (broadcast doesn't echo to self)
   }
 }
 
-function broadcastGameStart(players, mode) {
-  const spawnMap = {
-    '1v1': [
-      { team:0, x: CELL*2.5, y: H/2 },
-      { team:1, x: W-CELL*2.5, y: H/2 },
-    ],
-    '2v2': [
-      { team:0, x: CELL*2.5, y: H/3 },
-      { team:0, x: CELL*2.5, y: H*2/3 },
-      { team:1, x: W-CELL*2.5, y: H/3 },
-      { team:1, x: W-CELL*2.5, y: H*2/3 },
-    ],
-  };
-  const slots = spawnMap[mode];
-  let t0 = 0, t1 = 0;
-  const assignments = players.map(p => {
-    const t = p.team;
-    const slot = slots.find(s => s.team === t && slots.filter(s2=>s2.team===t).indexOf(s) === (t===0?t0:t1));
-    if (t===0) t0++; else t1++;
-    const sp = slots.filter(s=>s.team===t)[t===0?t0-1:t1-1] || slots.find(s=>s.team===t);
-    return { userId: p.userId, username: p.username, team: p.team, spawnX: sp.x, spawnY: sp.y };
-  });
-  netSend('game_start', { assignments, mode });
+// Build the start payload (server assigns real spawns; teams/usernames matter here).
+function buildStartPayload(players, mode) {
+  const assignments = players.map(p => ({ userId: p.userId, username: p.username, team: p.team }));
+  return { assignments, mode };
 }
 
 // ─── Game start handler ───────────────────────────────────────────────────────
 function handleGameStart({ assignments, mode }) {
-  // Connect to the authoritative game server (the SERVER simulates the match).
+  if (serverMode) return;   // already started (guard against duplicate broadcasts)
   startServerGame(assignments, mode);
 }
 
@@ -2668,21 +2656,26 @@ async function enterMatchedLobby(lobbyId) {
   if (!lobby || !members) return;
 
   currentLobby = lobby;
+  matchStarting = false;
   const me = members.find(m => m.player_id === currentUser.id);
   myTeam = me?.team ?? 0;
 
   document.getElementById('matchmaking').classList.remove('show');
   document.getElementById('mm-status').textContent = 'Match found!';
 
-  subscribeToLobby(lobbyId);
+  subscribeLobby(lobbyId);
 
   // Host starts the game after a short delay to let all clients subscribe
   if (currentUser.id === lobby.host_id) {
     setTimeout(() => {
-      broadcastGameStart(
-        members.map(m => ({ userId:m.player_id, username:m.profiles.username, team:m.team, ready:true })),
+      if (matchStarting) return;
+      matchStarting = true;
+      const payload = buildStartPayload(
+        members.map(m => ({ userId:m.player_id, username:m.profiles?.username || 'Player', team:m.team })),
         lobby.mode
       );
+      netSend('game_start', payload);
+      handleGameStart(payload);
     }, 3000);
   }
 }
