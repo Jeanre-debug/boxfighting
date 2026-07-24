@@ -601,6 +601,18 @@ let player, bots = [];
 let gameMode = 'menu', gameOver = false;
 let keys = {}, mouse = { x: W/2, y: H/2, buttons: 0 };
 let virtualMouse = { x: W/2, y: H/2 };
+// The locked-pointer aim cursor is kept at a FIXED distance from the player (not
+// just a minimum) — otherwise its distance can drift over a session, and since
+// turn angle-per-pixel depends on that distance, sensitivity would silently get
+// mushier the farther it wanders (and any position change the anchoring code
+// doesn't know about, e.g. explosion knockback, shows up as a sudden aim jerk).
+const AIM_ANCHOR_DIST = 120;
+function anchorVirtualMouse(x, y) {
+  const cdx = virtualMouse.x - x, cdy = virtualMouse.y - y;
+  const cd = Math.sqrt(cdx * cdx + cdy * cdy) || 1;
+  virtualMouse.x = x + cdx / cd * AIM_ANCHOR_DIST;
+  virtualMouse.y = y + cdy / cd * AIM_ANCHOR_DIST;
+}
 let paused = false;
 let lastTime = 0, timeScale = 1.0, slowMoTimer = 0;
 
@@ -1609,11 +1621,12 @@ function drawEntity(e, bodyColor) {
   ctx.fillStyle = bodyColor;
   ctx.beginPath(); ctx.arc(e.x,e.y,e.radius,0,Math.PI*2); ctx.fill();
 
-  // Aim arc (player only)
+  // Aim arc (player only) — reach scales per weapon (sniper farthest, shotgun/pickaxe closest)
   if (!e.isBot) {
+    const reach = WEAPONS[e.weapon]?.reticle ?? 70;
     ctx.beginPath();
-    ctx.arc(e.x, e.y, e.radius+60, e.aimAngle-Math.PI/8, e.aimAngle+Math.PI/8);
-    ctx.strokeStyle = 'rgba(255,255,255,0.82)'; ctx.lineWidth=2.5; ctx.lineCap='round'; ctx.stroke();
+    ctx.arc(e.x, e.y, e.radius+reach, e.aimAngle-Math.PI/8, e.aimAngle+Math.PI/8);
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth=3.4; ctx.lineCap='round'; ctx.stroke();
   }
 
   // Weapon visual
@@ -2271,9 +2284,7 @@ function stepSim(scaledDt) {
   if (locked) {
     virtualMouse.x += p.x - preX;
     virtualMouse.y += p.y - preY;
-    const cdx = virtualMouse.x - p.x, cdy = virtualMouse.y - p.y;
-    const cd = Math.sqrt(cdx * cdx + cdy * cdy) || 1;
-    if (cd < 50) { virtualMouse.x = p.x + cdx / cd * 50; virtualMouse.y = p.y + cdy / cd * 50; }
+    anchorVirtualMouse(p.x, p.y);
   }
 
   // Dash afterimages
@@ -2440,6 +2451,14 @@ function reconcile(ackSeq) {
   if (!predicted || !netState) return;
   const sp = netState.players[onlineMyId];
   if (!sp) return;
+  // The server snap can disagree with our own prediction (explosion knockback,
+  // ordinary drift correction, etc.) — that's a position change stepServer's own
+  // anchoring never saw, so without this the aim reticle would yank around every
+  // time a snapshot corrects us.
+  if (document.pointerLockElement === canvas) {
+    virtualMouse.x += sp.x - predicted.x;
+    virtualMouse.y += sp.y - predicted.y;
+  }
   predicted.x = sp.x; predicted.y = sp.y;
   if (typeof ackSeq === 'number') inputHistory = inputHistory.filter(h => h.seq > ackSeq);
   for (const h of inputHistory) {
@@ -2501,9 +2520,7 @@ function stepServer(scaledDt) {
     if (locked) {
       virtualMouse.x += predicted.x - preX;
       virtualMouse.y += predicted.y - preY;
-      const cdx = virtualMouse.x - predicted.x, cdy = virtualMouse.y - predicted.y;
-      const cd = Math.sqrt(cdx * cdx + cdy * cdy) || 1;
-      if (cd < 50) { virtualMouse.x = predicted.x + cdx / cd * 50; virtualMouse.y = predicted.y + cdy / cd * 50; }
+      anchorVirtualMouse(predicted.x, predicted.y);
     }
   }
   pendingInput.dash = pendingInput.edit = pendingInput.reset =
@@ -2606,6 +2623,10 @@ function astReconcile(ackSeq) {
   if (!astPredicted || !astNetState) return;
   const sp = astNetState.ships[onlineMyId];
   if (!sp) return;
+  if (astControlScheme === 'pro' && document.pointerLockElement === canvas) {
+    virtualMouse.x += sp.x - astPredicted.x;
+    virtualMouse.y += sp.y - astPredicted.y;
+  }
   astPredicted.x = sp.x; astPredicted.y = sp.y; astPredicted.vx = sp.vx; astPredicted.vy = sp.vy; astPredicted.angle = sp.angle;
   if (typeof ackSeq === 'number') astInputHistory = astInputHistory.filter(h => h.seq > ackSeq);
   for (const h of astInputHistory) moveShip(astPredicted, h.input, h.dt);
@@ -2692,6 +2713,7 @@ function stepAstServer(scaledDt) {
     if (astControlScheme === 'pro' && locked) {
       virtualMouse.x += astPredicted.x - preX;
       virtualMouse.y += astPredicted.y - preY;
+      anchorVirtualMouse(astPredicted.x, astPredicted.y);
     }
   }
 
@@ -2824,6 +2846,7 @@ function stepAstSolo(scaledDt) {
     if (astControlScheme === 'pro' && locked) {
       virtualMouse.x += s.x - preX;
       virtualMouse.y += s.y - preY;
+      anchorVirtualMouse(s.x, s.y);
     }
     applyAstSoloEvents(events);
   }

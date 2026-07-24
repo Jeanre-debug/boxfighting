@@ -26,13 +26,16 @@ export const PLAYER_BIGPOTS = 1;
 
 export const WEAPON_ORDER = ['ar', 'smg', 'shotgun', 'sniper', 'rocket', 'pickaxe'];
 
+// `reticle` = how far out the aim-arc indicator sits from the player (crosshair
+// reach) — scaled per weapon so longer-range guns show a farther-out reticle,
+// without going to extremes.
 export const WEAPONS = {
-  ar:      { name:'AR',      cd:140,  wallDmg:18, playerDmg:12, range:140, spread:0.03, pellets:1, magSize:30, reloadTime:1800, bLen:13, bW:2,  col:'#ffe944', sz:3 },
-  smg:     { name:'SMG',     cd:80,   wallDmg:7,  playerDmg:6,  range:60,  spread:0.11, pellets:1, magSize:25, reloadTime:1300, bLen:9,  bW:2,  col:'#88ffcc', sz:2 },
-  shotgun: { name:'SHOTGUN', cd:700,  wallDmg:8,  playerDmg:7,  range:28,  spread:0.38, pellets:8, magSize:8,  reloadTime:2200, bLen:7,  bW:5,  col:'#ff9933', sz:2 },
-  sniper:  { name:'SNIPER',  cd:1100, wallDmg:22, playerDmg:50, range:500, spread:0,    pellets:1, magSize:5,  reloadTime:2800, bLen:22, bW:1,  col:'#00eeff', sz:5, pierce:true },
-  rocket:  { name:'ROCKET',  cd:1400, wallDmg:0,  playerDmg:0,  range:260, spread:0,    pellets:1, magSize:2,  reloadTime:3500, bLen:15, bW:7,  col:'#ff5500', sz:7, isRocket:true },
-  pickaxe: { name:'PICKAXE', cd:650,  wallDmg:40, playerDmg:15, range:0,   spread:0,    pellets:0, magSize:Infinity, reloadTime:0, bLen:0, bW:0, col:'#f0c83c', sz:0, reach:46, arc:Math.PI/5, swingDur:280 },
+  ar:      { name:'AR',      cd:140,  wallDmg:18, playerDmg:12, range:140, spread:0.03, pellets:1, magSize:30, reloadTime:1800, bLen:13, bW:2,  col:'#ffe944', sz:3, reticle:76 },
+  smg:     { name:'SMG',     cd:80,   wallDmg:7,  playerDmg:6,  range:60,  spread:0.11, pellets:1, magSize:25, reloadTime:1300, bLen:9,  bW:2,  col:'#88ffcc', sz:2, reticle:64 },
+  shotgun: { name:'SHOTGUN', cd:700,  wallDmg:8,  playerDmg:7,  range:28,  spread:0.38, pellets:8, magSize:8,  reloadTime:2200, bLen:7,  bW:5,  col:'#ff9933', sz:2, reticle:60 },
+  sniper:  { name:'SNIPER',  cd:1100, wallDmg:22, playerDmg:50, range:500, spread:0,    pellets:1, magSize:5,  reloadTime:2800, bLen:22, bW:1,  col:'#00eeff', sz:5, pierce:true, reticle:100 },
+  rocket:  { name:'ROCKET',  cd:1400, wallDmg:0,  playerDmg:0,  range:260, spread:0,    pellets:1, magSize:2,  reloadTime:3500, bLen:15, bW:7,  col:'#ff5500', sz:7, isRocket:true, reticle:80 },
+  pickaxe: { name:'PICKAXE', cd:650,  wallDmg:40, playerDmg:15, range:0,   spread:0,    pellets:0, magSize:Infinity, reloadTime:0, bLen:0, bW:0, col:'#f0c83c', sz:0, reach:46, arc:Math.PI/5, swingDur:280, reticle:52 },
 };
 
 export const BOT_DIFF = {
