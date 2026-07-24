@@ -43,7 +43,7 @@ create table if not exists lobbies (
   id         uuid        primary key default gen_random_uuid(),
   code       text        unique not null,
   mode       text        not null default '1v1'
-                           check (mode in ('1v1', '2v2')),
+                           check (mode in ('1v1', '2v2', 'ast1v1')),
   host_id    uuid        references profiles (id) on delete set null,
   status     text        not null default 'waiting'
                            check (status in ('waiting', 'active', 'finished')),

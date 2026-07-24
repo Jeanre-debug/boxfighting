@@ -76,6 +76,8 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
 .nav-btn:hover .arr { opacity:1; transform:translateX(0); }
 .nav-online { color:var(--blue) !important; }
 .nav-online:hover { background:var(--blue-dim) !important; border-color:var(--blue) !important; }
+.nav-asteroids { color:#ffb454 !important; }
+.nav-asteroids:hover { background:rgba(255,180,84,0.12) !important; border-color:#ffb454 !important; }
 .nav-sep { height:1px; background:var(--border); margin:6px 0; }
 .nav-sub { font-size:10px; color:var(--ghost) !important; letter-spacing:2px; }
 .nav-sub:hover { color:var(--muted) !important; }
@@ -367,6 +369,8 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
         <button class="nav-btn" id="btn-survival">SURVIVAL<span class="arr">›</span></button>
         <button class="nav-btn" id="btn-freebuild">FREE BUILD<span class="arr">›</span></button>
         <button class="nav-btn nav-online" id="btn-play-online">PLAY ONLINE<span class="arr">›</span></button>
+        <button class="nav-btn nav-asteroids" id="btn-play-ast-solo">ASTEROIDS SOLO<span class="arr">›</span></button>
+        <button class="nav-btn nav-asteroids" id="btn-play-asteroids">ASTEROIDS PVP<span class="arr">›</span></button>
         <div class="nav-sep"></div>
         <button class="nav-btn nav-sub" id="btn-settings-menu">SETTINGS & KEYBINDS<span class="arr">›</span></button>
       </div>
@@ -417,7 +421,7 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
       <!-- center stage -->
       <div class="fn-stage">
         <div class="fn-emblem" id="lobby-emblem">🥊</div>
-        <div class="fn-tagline">BOX FIGHT ARENA</div>
+        <div class="fn-tagline" id="lobby-tagline">BOX FIGHT ARENA</div>
       </div>
 
       <!-- bottom control deck -->
@@ -538,6 +542,8 @@ import {
   clampArena, wrapAngle, dist2,
 } from './shared/geometry.js';
 import { createState, addPlayer, removePlayer, step as simStep, movePlayer } from './shared/sim.js';
+import { moveShip, createState as astCreateState, addPlayer as astAddPlayer, step as astStep, initField as astInitField } from './shared/ast-sim.js';
+import * as ASTC from './shared/ast-constants.js';
 
 // Client wrapper: resolve against the global `walls` table.
 function resolveWalls(e) { resolveWallsPure(e, walls); }
@@ -598,6 +604,7 @@ let currentUser = null, currentProfile = null;
 let currentLobby = null, lobbyChannel = null;
 let remotePlayers = {};     // userId → bot entity in bots[]
 let myTeam = 0, lobbyModeSelected = '1v1';
+let currentGame = 'boxfight';   // 'boxfight' | 'asteroids' — which game the lobby/menu is set up for
 let stateInterval = null;
 let amIReady = false;
 let matchStarting = false;
@@ -643,6 +650,24 @@ const usesInputModel = () => isSimMode() || serverMode;
 let predicted = null;         // { x, y, aimAngle, dashVx, dashVy, dashEnd, dashReadyAt }
 let inputHistory = [];        // unacked inputs to replay on reconcile
 const PERF = () => performance.now();
+
+// ─── Asteroids PvP (separate WS connection + sim, same lobby/matchmaking code) ─
+let astWS = null, astServerMode = false;
+let astNetState = null, astShips = {}, astNetSeq = 0;
+let astPredicted = null;      // { x, y, angle, vx, vy, radius, lastFire }
+let astInputHistory = [];
+let astMySlot = 0, astOppUsername = '';
+let astShapeCache = new Map();  // asteroid id → stable jagged-polygon offsets
+let astStarfield = null;        // lazily-generated static star positions
+
+// ─── Asteroids Solo Arcade (offline, client-owned — same pattern as vsbot/survival) ─
+let astSoloState = null;
+let astSoloScore = 0, astSoloLives = ASTC.SOLO_LIVES, astSoloWave = 1;
+let astSoloNextLifeAt = ASTC.SOLO_EXTRA_LIFE_SCORE;
+let astSoloWaveState = 'active';   // 'active' | 'between'
+let astSoloWaveTimer = 0;
+let astSoloHighScore = 0;
+try { astSoloHighScore = parseInt(localStorage.getItem('ast_hiscore') || '0', 10) || 0; } catch (e) {}
 
 // ─── Ranked system ────────────────────────────────────────────────────────────
 // From scrap to master architect — the box-fight climb.
@@ -1690,6 +1715,8 @@ function drawWeaponHUD() {
 // MAIN RENDER
 // ═══════════════════════════════════════════════════════════════════════════════
 function render() {
+  if (gameMode === 'ast-online') { renderAsteroidsScene(); return; }
+  if (gameMode === 'ast-solo') { renderAsteroidsSoloScene(); return; }
   if (gameMode === 'menu' || !player) return;
   // Screen shake
   const sx = shake.intensity > 0.1 ? (Math.random()*2-1)*shake.intensity : 0;
@@ -1941,6 +1968,183 @@ function render() {
 
   // Weapon HUD
   drawWeaponHUD();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ASTEROIDS PVP — RENDER
+// ═══════════════════════════════════════════════════════════════════════════════
+// Only ships get color — everything else (rocks, bullets, sparks) stays the old
+// monochrome vector-arcade white/gray, same as the 1979 cabinet.
+const AST_BLUE = '#4d94ff', AST_RED = '#ff4d4d';
+
+function genStarfield() {
+  const stars = [];
+  for (let i = 0; i < 140; i++)
+    stars.push({ x: Math.random() * W, y: Math.random() * H, r: Math.random() * 1.6 + 0.4, a: Math.random() * 0.5 + 0.3 });
+  return stars;
+}
+
+// Ship hull points in local space, tip facing +x (canvas rotates to aim).
+function astShipShape(r) {
+  return [{ x: r * 1.15, y: 0 }, { x: -r * 0.85, y: r * 0.8 }, { x: -r * 0.45, y: 0 }, { x: -r * 0.85, y: -r * 0.8 }];
+}
+
+// Deterministic jagged polygon per asteroid id, cached so its silhouette
+// doesn't reshuffle every frame (server only sends id/x/y/angle/size/radius).
+function getAstShape(id, radius) {
+  let shape = astShapeCache.get(id);
+  if (!shape) {
+    let seed = (id * 2654435761) % 2147483647; if (seed <= 0) seed += 2147483646;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const n = 9 + Math.floor(rnd() * 4);
+    shape = [];
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2, rr = radius * (0.72 + rnd() * 0.34);
+      shape.push({ x: Math.cos(a) * rr, y: Math.sin(a) * rr });
+    }
+    astShapeCache.set(id, shape);
+  }
+  return shape;
+}
+
+// Hollow line-art rock — fills with the space color to occlude stars behind it,
+// then strokes a bright outline, exactly how the original vector monitor drew it.
+function drawAsteroidShape(a) {
+  const pts = getAstShape(a.id, a.radius);
+  ctx.save(); ctx.translate(a.x, a.y); ctx.rotate(a.angle);
+  ctx.beginPath();
+  pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+  ctx.closePath();
+  ctx.fillStyle = '#05060c';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(225,232,245,0.9)';
+  ctx.lineWidth = 1.8;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawAstPickup(p) {
+  const pulse = 0.75 + 0.25 * Math.sin(Date.now() * 0.006 + p.id);
+  ctx.save(); ctx.globalAlpha = pulse;
+  ctx.beginPath(); ctx.arc(p.x, p.y, ASTC.PICKUP_RADIUS, 0, Math.PI * 2);
+  ctx.fillStyle = '#05060c'; ctx.fill();
+  ctx.strokeStyle = '#4ade80'; ctx.lineWidth = 1.8; ctx.stroke();
+  ctx.fillStyle = '#4ade80'; ctx.font = 'bold 12px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('+', p.x, p.y + 1);
+  ctx.textBaseline = 'alphabetic'; ctx.restore();
+}
+
+// The only colored things on screen — a crisp glowing outline in the ship's
+// team color (blue = you, red = them), transparent-tinted body, thin white
+// nose accent so it still reads against a same-colored bullet or flame.
+function drawAstShip(s, color) {
+  ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(s.angle);
+
+  if (s.thrusting && !s.dead) {
+    const flick = 0.55 + Math.random() * 0.45, r = ASTC.SHIP_RADIUS;
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.45, 0);
+    ctx.lineTo(-r * (0.85 + flick * 0.9), -4.5);
+    ctx.lineTo(-r * (1.15 + flick * 1.3), 0);
+    ctx.lineTo(-r * (0.85 + flick * 0.9), 4.5);
+    ctx.closePath();
+    ctx.globalAlpha = 0.9; ctx.fillStyle = '#ffb347'; ctx.fill(); ctx.globalAlpha = 1;
+  }
+
+  const pts = astShipShape(ASTC.SHIP_RADIUS);
+  ctx.beginPath();
+  pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+  ctx.closePath();
+  ctx.lineJoin = 'round';
+
+  if (s.dead) {
+    ctx.strokeStyle = 'rgba(150,150,150,0.5)'; ctx.lineWidth = 1.5; ctx.stroke();
+  } else {
+    ctx.globalAlpha = 0.16; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.shadowColor = color; ctx.shadowBlur = 9;
+    ctx.strokeStyle = color; ctx.lineWidth = 2.4; ctx.stroke();
+    ctx.shadowBlur = 0;
+    // nose accent so the ship reads as more than a plain triangle
+    ctx.beginPath();
+    ctx.moveTo(ASTC.SHIP_RADIUS * 0.35, 0); ctx.lineTo(-ASTC.SHIP_RADIUS * 0.1, 0);
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 1.4; ctx.stroke();
+  }
+  ctx.restore();
+
+  if (s.invuln && !s.dead) {
+    ctx.save(); ctx.globalAlpha = 0.45 + 0.3 * Math.sin(Date.now() * 0.01);
+    ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.setLineDash([3, 4]);
+    ctx.beginPath(); ctx.arc(s.x, s.y, ASTC.SHIP_RADIUS + 8, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawAstHpPanel(x, y, ship, name, color, alignRight) {
+  ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x, y, 210, 50);
+  ctx.fillStyle = color; ctx.font = 'bold 12px monospace'; ctx.textAlign = alignRight ? 'right' : 'left';
+  ctx.fillText(name, alignRight ? x + 200 : x + 10, y + 18);
+  const hp = ship ? Math.max(0, Math.ceil(ship.hp)) : 0;
+  const frac = Math.max(0, hp / ASTC.SHIP_HP);
+  const barX = x + 10, barW = 190;
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#101410'; ctx.fillRect(barX, y + 26, barW, 10);
+  ctx.fillStyle = frac > 0.5 ? '#33cc55' : frac > 0.25 ? '#ddaa22' : '#dd3333';
+  ctx.fillRect(barX, y + 26, barW * frac, 10);
+  ctx.fillStyle = '#ccc'; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+  ctx.fillText(String(hp), x + 200, y + 35);
+  ctx.textAlign = 'left';
+  if (ship && ship.dead) { ctx.fillStyle = '#ff5544'; ctx.font = 'bold 10px monospace'; ctx.fillText('DESTROYED', barX, y + 46); }
+}
+
+function renderAsteroidsScene() {
+  if (!astStarfield) astStarfield = genStarfield();
+  const sx = shake.intensity > 0.1 ? (Math.random() * 2 - 1) * shake.intensity : 0;
+  const sy = shake.intensity > 0.1 ? (Math.random() * 2 - 1) * shake.intensity : 0;
+  ctx.save(); ctx.translate(sx, sy);
+
+  ctx.fillStyle = '#05060c'; ctx.fillRect(0, 0, W, H);
+  for (const st of astStarfield) { ctx.globalAlpha = st.a; ctx.fillStyle = '#cfe0ff'; ctx.beginPath(); ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2); ctx.fill(); }
+  ctx.globalAlpha = 1;
+
+  const state = astNetState;
+  if (state) {
+    for (const p of state.pickups) drawAstPickup(p);
+    for (const a of state.asteroids) drawAsteroidShape(a);
+    ctx.fillStyle = '#fff';
+    for (const b of state.bullets) { ctx.globalAlpha = 0.9; ctx.beginPath(); ctx.arc(b.x, b.y, ASTC.BULLET_RADIUS, 0, Math.PI * 2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+  }
+
+  for (const id in astShips) {
+    const s = astShips[id];
+    const isMe = id === onlineMyId;
+    const color = isMe ? AST_BLUE : AST_RED;
+    drawAstShip(s, color);
+    const label = isMe ? (currentProfile?.username || '') : s.username;
+    if (label) {
+      ctx.fillStyle = color; ctx.font = '11px monospace'; ctx.textAlign = 'center';
+      ctx.fillText(label, s.x, s.y - ASTC.SHIP_RADIUS - 18);
+      ctx.textAlign = 'left';
+    }
+  }
+
+  ctx.save();
+  for (const p of particles) { ctx.globalAlpha = p.life / p.maxLife; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); ctx.fill(); }
+  ctx.restore();
+  ctx.save();
+  for (const ft of floatingTexts) { ctx.globalAlpha = ft.life / ft.maxLife; ctx.fillStyle = ft.color; ctx.font = `bold ${ft.size}px monospace`; ctx.textAlign = 'center'; ctx.fillText(ft.text, ft.x, ft.y); }
+  ctx.textAlign = 'left'; ctx.restore();
+
+  ctx.restore(); // un-shake
+
+  if (playerHitFlash > 0) { ctx.fillStyle = `rgba(255,0,0,${playerHitFlash * 0.32})`; ctx.fillRect(0, 0, W, H); }
+  if (killFlash > 0) { ctx.fillStyle = `rgba(255,255,255,${killFlash * 0.22})`; ctx.fillRect(0, 0, W, H); }
+
+  const meShip = astShips[onlineMyId];
+  const oppShip = Object.values(astShips).find(s => s.id !== onlineMyId);
+  drawAstHpPanel(10, 10, meShip, currentProfile?.username || 'YOU', AST_BLUE, false);
+  drawAstHpPanel(W - 220, 10, oppShip, astOppUsername, AST_RED, true);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2308,6 +2512,354 @@ function stepServer(scaledDt) {
   syncNetGlobals();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ASTEROIDS PVP — AUTHORITATIVE SERVER CLIENT (separate WS connection + sim,
+// same lobby/matchmaking plumbing as Box Fight above). Mirrors startServerGame /
+// ingestSnapshot / reconcile / stepServer but talks ship physics instead of
+// build-fight state.
+// ═══════════════════════════════════════════════════════════════════════════════
+function startAsteroidsGame(assignments, mode, room) {
+  const me = assignments.find(a => a.userId === currentUser.id);
+  if (!me) return;
+  astMySlot = me.team;   // lobby 'team' (0/1) doubles as the ship spawn slot
+  onlineMyId = currentUser.id;
+  lastWasOnline = true;
+  currentRoom = room || currentLobby.id;
+  usernamesById = {};
+  assignments.forEach(a => { usernamesById[a.userId] = a.username; });
+  const opp = assignments.find(a => a.userId !== currentUser.id);
+  astOppUsername = opp?.username || 'Opponent';
+
+  gameMode = 'ast-online'; astServerMode = true; gameOver = false;
+  particles = []; explosions = []; afterimages = []; floatingTexts = []; killfeed = [];
+  astNetState = null; astShips = {}; astNetSeq = 0; astShapeCache.clear();
+  timeScale = 1.0; slowMoTimer = 0; shake.intensity = 0; playerHitFlash = 0; killFlash = 0; combo = 0; bannerText = null;
+
+  const sp = ASTC.SHIP_SPAWNS[astMySlot % ASTC.SHIP_SPAWNS.length];
+  astPredicted = { x: sp.x, y: sp.y, angle: sp.angle, vx: 0, vy: 0, radius: ASTC.SHIP_RADIUS, lastFire: -9999 };
+  astInputHistory = [];
+
+  document.getElementById('menu').classList.remove('show');
+  document.getElementById('in-lobby').classList.remove('show');
+  document.getElementById('result').classList.remove('show');
+  document.getElementById('matchmaking').classList.remove('show');
+  if (mmTimerInterval) { clearInterval(mmTimerInterval); mmTimerInterval = null; }
+
+  netPing = 0; onlineMode = mode;
+  const ind = document.getElementById('online-indicator');
+  ind.textContent = `● ASTEROIDS · ${mode}`; ind.classList.add('show');
+
+  astWS = new WebSocket(GAME_SERVER);
+  astWS.onopen = () => {
+    astWS.send(JSON.stringify({
+      type: 'join', roomId: currentRoom, playerId: currentUser.id,
+      username: currentProfile.username, team: astMySlot, mode,
+    }));
+    if (pingInterval) clearInterval(pingInterval);
+    pingInterval = setInterval(() => {
+      if (astWS && astWS.readyState === WebSocket.OPEN) astWS.send(JSON.stringify({ type: 'ping', t: performance.now() }));
+    }, 1000);
+  };
+  astWS.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } handleAstServerMsg(m); };
+  astWS.onclose = () => { if (pingInterval) { clearInterval(pingInterval); pingInterval = null; } if (astServerMode && !gameOver) showServerResult('lose', 'Disconnected'); };
+  astWS.onerror = () => {};
+}
+
+function handleAstServerMsg(m) {
+  if (m.type === 'snapshot') ingestAstSnapshot(m);
+  else if (m.type === 'pong') netPing = Math.round(performance.now() - m.t);
+  else if (m.type === 'gameover') {
+    const won = m.winner === astMySlot;
+    showServerResult(won ? 'win' : (m.winner === 'draw' ? 'draw' : 'lose'), '');
+  }
+}
+
+function ingestAstSnapshot(m) {
+  astNetState = m.state;
+  for (const id in m.state.ships) {
+    const sp = m.state.ships[id];
+    let rs = astShips[id];
+    if (!rs) rs = astShips[id] = { id, x: sp.x, y: sp.y, angle: sp.angle, isRemote: id !== onlineMyId, username: usernamesById[id] || '' };
+    rs.tx = sp.x; rs.ty = sp.y; rs.tangle = sp.angle;
+    rs.hp = sp.hp; rs.dead = sp.dead; rs.thrusting = sp.thrusting; rs.invuln = sp.invuln;
+  }
+  for (const id in astShips) if (!m.state.ships[id]) delete astShips[id];
+  astReconcile(m.ackSeq);
+  applyAstServerEvents(m.events);
+}
+
+// Reconcile our predicted ship against the server snapshot, then replay
+// unacked inputs — identical shape to reconcile() above but for ship physics.
+function astReconcile(ackSeq) {
+  if (!astPredicted || !astNetState) return;
+  const sp = astNetState.ships[onlineMyId];
+  if (!sp) return;
+  astPredicted.x = sp.x; astPredicted.y = sp.y; astPredicted.vx = sp.vx; astPredicted.vy = sp.vy; astPredicted.angle = sp.angle;
+  if (typeof ackSeq === 'number') astInputHistory = astInputHistory.filter(h => h.seq > ackSeq);
+  for (const h of astInputHistory) moveShip(astPredicted, h.input, h.dt);
+}
+
+function applyAstServerEvents(events) {
+  for (const e of events) {
+    switch (e.t) {
+      case 'astBreak': {
+        const n = e.size === 'large' ? 14 : e.size === 'medium' ? 9 : 5;
+        spawnParticles(e.x, e.y, '#e6ecf5', n);
+        doShake(e.size === 'large' ? 4 : e.size === 'medium' ? 2.5 : 1.5);
+        break;
+      }
+      case 'pickupSpawn': spawnParticles(e.x, e.y, '#4ade80', 6); break;
+      case 'pickupTaken': {
+        const rs = astShips[e.id];
+        if (rs) spawnFloat(rs.x, rs.y - 30, `+${e.heal} HP`, '#4ade80', 14);
+        spawnParticles(e.x, e.y, '#4ade80', 10, 0.8);
+        break;
+      }
+      case 'shipHit': {
+        const rs = astShips[e.id];
+        if (e.id === onlineMyId) { playerHitFlash = 1; doShake(5); if (rs) spawnFloat(rs.x, rs.y - 28, `-${Math.ceil(e.dmg)}`, '#ff4444', 14); }
+        else if (rs) spawnFloat(rs.x, rs.y - 28, `-${Math.ceil(e.dmg)}`, '#fff', 12);
+        break;
+      }
+      case 'shipKill': {
+        if (e.id === onlineMyId) { doShake(14); playerHitFlash = 1; spawnParticles(e.x, e.y, AST_BLUE, 24); triggerSlowMo(700); }
+        else { doShake(10); killFlash = 1; spawnParticles(e.x, e.y, AST_RED, 20); spawnFloat(e.x, e.y - 45, 'DESTROYED!', '#44ff88', 18); triggerSlowMo(700); }
+        break;
+      }
+    }
+  }
+}
+
+function syncAstGlobals() {
+  const rs = astShips[onlineMyId];
+  if (rs && astPredicted) { rs.x = astPredicted.x; rs.y = astPredicted.y; rs.angle = astPredicted.angle; }
+}
+
+function gatherAstInput() {
+  return {
+    rotateLeft:  !!(keys['ArrowLeft']  || keys['KeyA']),
+    rotateRight: !!(keys['ArrowRight'] || keys['KeyD']),
+    thrust:      !!(keys['ArrowUp']    || keys['KeyW']),
+    fire:        !!(keys['Space']      || (mouse.buttons & 1)),
+  };
+}
+
+// One online frame: predict local ship instantly, send input, interpolate remote ship.
+function stepAstServer(scaledDt) {
+  const rs = astShips[onlineMyId];
+  if (!rs || !astPredicted) return;
+
+  const ind = document.getElementById('online-indicator');
+  const col = netPing < 60 ? '#4ade80' : netPing < 120 ? '#ddaa22' : '#ff5544';
+  ind.innerHTML = `● ASTEROIDS · <span style="color:${col}">${netPing}ms</span>`;
+
+  const input = gatherAstInput();
+  if (!rs.dead && astWS && astWS.readyState === WebSocket.OPEN) {
+    const seq = astNetSeq++;
+    astWS.send(JSON.stringify({ type: 'input', seq, input }));
+    moveShip(astPredicted, input, scaledDt);
+    astInputHistory.push({ seq, input, dt: scaledDt });
+    if (astInputHistory.length > 240) astInputHistory.shift();
+    if (input.thrust && Math.random() > 0.5) {
+      const back = astPredicted.angle + Math.PI;
+      spawnParticles(astPredicted.x + Math.cos(back) * ASTC.SHIP_RADIUS, astPredicted.y + Math.sin(back) * ASTC.SHIP_RADIUS, '#ffaa44', 1, 0.6);
+    }
+  }
+
+  const k = Math.min(1, 0.30 * scaledDt / FRAME_MS);
+  for (const id in astShips) {
+    if (id === onlineMyId) continue;
+    const s = astShips[id];
+    if (s.tx === undefined) continue;
+    s.x += (s.tx - s.x) * k; s.y += (s.ty - s.y) * k;
+    s.angle = s.tangle;
+  }
+
+  syncAstGlobals();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ASTEROIDS SOLO ARCADE — offline, client-owned (same pattern as Box Fight's
+// vsbot/survival: the client runs shared/ast-sim.js directly, no server). Classic
+// 1979 Asteroids scoring: 20/50/100 pts by rock size, extra life every 10,000 pts,
+// 3 lives, wave-based rock counts.
+// ═══════════════════════════════════════════════════════════════════════════════
+function waveAsteroidCount(wave) {
+  return Math.min(ASTC.SOLO_WAVE_MAX_COUNT, ASTC.SOLO_WAVE_BASE_COUNT + (wave - 1) * ASTC.SOLO_WAVE_COUNT_STEP);
+}
+
+function initAstSolo() {
+  astSoloState = astCreateState();
+  astSoloState.noAutoSpawn = true;   // Solo clears a wave to zero on purpose; PvP tops the field back up instead
+  astAddPlayer(astSoloState, 'me', { x: ASTC.SOLO_SPAWN.x, y: ASTC.SOLO_SPAWN.y, angle: ASTC.SOLO_SPAWN.angle });
+  astInitField(astSoloState, waveAsteroidCount(1));
+
+  astSoloScore = 0; astSoloLives = ASTC.SOLO_LIVES; astSoloWave = 1;
+  astSoloNextLifeAt = ASTC.SOLO_EXTRA_LIFE_SCORE;
+  astSoloWaveState = 'active'; astSoloWaveTimer = 0;
+  astShapeCache.clear();
+
+  gameMode = 'ast-solo'; lastMode = 'ast-solo'; gameOver = false;
+  serverMode = false; astServerMode = false; lastWasOnline = false; isMatchmade = false; resultWasRanked = false;
+  particles = []; explosions = []; afterimages = []; floatingTexts = []; killfeed = [];
+  timeScale = 1.0; slowMoTimer = 0; shake.intensity = 0; playerHitFlash = 0; killFlash = 0; bannerText = null;
+
+  document.getElementById('menu').classList.remove('show');
+  document.getElementById('result').classList.remove('show');
+}
+
+function astSoloRespawnShip() {
+  const s = astSoloState.ships.me;
+  s.x = ASTC.SOLO_SPAWN.x; s.y = ASTC.SOLO_SPAWN.y; s.angle = ASTC.SOLO_SPAWN.angle;
+  s.vx = 0; s.vy = 0; s.hp = ASTC.SHIP_HP; s.dead = false;
+  s.spawnAt = performance.now();
+}
+
+function astSoloAdvanceWave() {
+  astSoloWave++;
+  astSoloState.asteroids = [];
+  astSoloState.pickups = [];
+  astSoloState.bullets = [];
+  astInitField(astSoloState, waveAsteroidCount(astSoloWave));
+  astSoloWaveState = 'active';
+  spawnBanner(`WAVE ${astSoloWave}`, '#ff9933', 28, 2000);
+}
+
+function astSoloAward(points, x, y, color) {
+  astSoloScore += points;
+  spawnFloat(x, y - 10, `+${points}`, color || '#ffcc00', 13);
+  if (astSoloScore >= astSoloNextLifeAt) {
+    astSoloLives++;
+    astSoloNextLifeAt += ASTC.SOLO_EXTRA_LIFE_SCORE;
+    spawnBanner('EXTRA LIFE!', '#4ade80', 24, 1800);
+  }
+}
+
+function applyAstSoloEvents(events) {
+  for (const e of events) {
+    switch (e.t) {
+      case 'astBreak': {
+        const n = e.size === 'large' ? 14 : e.size === 'medium' ? 9 : 5;
+        spawnParticles(e.x, e.y, '#e6ecf5', n);
+        doShake(e.size === 'large' ? 3 : e.size === 'medium' ? 2 : 1);
+        astSoloAward(ASTC.AST_SCORE[e.size], e.x, e.y, '#ffcc00');
+        break;
+      }
+      case 'pickupSpawn': spawnParticles(e.x, e.y, '#4ade80', 6); break;
+      case 'pickupTaken': spawnFloat(e.x, e.y - 30, `+${e.heal} HP`, '#4ade80', 14); spawnParticles(e.x, e.y, '#4ade80', 10, 0.8); break;
+      case 'shipHit': playerHitFlash = 1; doShake(4); break;
+      case 'shipKill': {
+        doShake(14); playerHitFlash = 1;
+        spawnParticles(e.x, e.y, AST_BLUE, 24); spawnParticles(e.x, e.y, '#fff', 8);
+        triggerSlowMo(600);
+        astSoloLives--;
+        if (astSoloLives > 0) {
+          spawnFloat(e.x, e.y - 45, `${astSoloLives} SHIP${astSoloLives === 1 ? '' : 'S'} LEFT`, AST_BLUE, 15);
+          astSoloRespawnShip();
+        } else {
+          astSoloGameOver();
+        }
+        break;
+      }
+    }
+  }
+}
+
+function astSoloGameOver() {
+  if (gameOver) return;
+  gameOver = true;
+  document.exitPointerLock();
+  const isNewHigh = astSoloScore > astSoloHighScore;
+  if (isNewHigh) { astSoloHighScore = astSoloScore; try { localStorage.setItem('ast_hiscore', String(astSoloHighScore)); } catch (e) {} }
+
+  const el = document.getElementById('resultText');
+  el.textContent = 'GAME OVER'; el.style.color = '#ff4444';
+  document.getElementById('resultSub').textContent =
+    `SCORE ${astSoloScore.toLocaleString()} · WAVE ${astSoloWave}` + (isNewHigh ? ' · NEW HIGH SCORE!' : ` · BEST ${astSoloHighScore.toLocaleString()}`);
+  document.getElementById('result-rank').innerHTML = '';
+  document.getElementById('btn-again').textContent = 'PLAY AGAIN';
+  document.getElementById('result').classList.add('show');
+}
+
+function stepAstSolo(scaledDt) {
+  const s = astSoloState.ships.me;
+  if (!s) return;
+  if (!s.dead) {
+    const events = astStep(astSoloState, { me: gatherAstInput() }, performance.now(), scaledDt);
+    applyAstSoloEvents(events);
+  }
+  if (gameOver) return;
+
+  if (astSoloWaveState === 'active' && astSoloState.asteroids.length === 0 && !s.dead) {
+    astSoloWaveState = 'between';
+    astSoloWaveTimer = ASTC.SOLO_WAVE_CLEAR_DELAY_MS;
+    spawnBanner(`WAVE ${astSoloWave} CLEARED`, '#44ff88', 26, 1800);
+  } else if (astSoloWaveState === 'between') {
+    astSoloWaveTimer -= scaledDt;
+    if (astSoloWaveTimer <= 0) astSoloAdvanceWave();
+  }
+}
+
+function renderAsteroidsSoloScene() {
+  if (!astStarfield) astStarfield = genStarfield();
+  const sx = shake.intensity > 0.1 ? (Math.random() * 2 - 1) * shake.intensity : 0;
+  const sy = shake.intensity > 0.1 ? (Math.random() * 2 - 1) * shake.intensity : 0;
+  ctx.save(); ctx.translate(sx, sy);
+
+  ctx.fillStyle = '#05060c'; ctx.fillRect(0, 0, W, H);
+  for (const st of astStarfield) { ctx.globalAlpha = st.a; ctx.fillStyle = '#cfe0ff'; ctx.beginPath(); ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2); ctx.fill(); }
+  ctx.globalAlpha = 1;
+
+  const state = astSoloState;
+  for (const p of state.pickups) drawAstPickup(p);
+  for (const a of state.asteroids) drawAsteroidShape(a);
+  ctx.fillStyle = '#fff';
+  for (const b of state.bullets) { ctx.globalAlpha = 0.9; ctx.beginPath(); ctx.arc(b.x, b.y, ASTC.BULLET_RADIUS, 0, Math.PI * 2); ctx.fill(); }
+  ctx.globalAlpha = 1;
+
+  const s = state.ships.me;
+  if (s && !s.dead) drawAstShip(s, AST_BLUE);
+
+  ctx.save();
+  for (const p of particles) { ctx.globalAlpha = p.life / p.maxLife; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); ctx.fill(); }
+  ctx.restore();
+  ctx.save();
+  for (const ft of floatingTexts) { ctx.globalAlpha = ft.life / ft.maxLife; ctx.fillStyle = ft.color; ctx.font = `bold ${ft.size}px monospace`; ctx.textAlign = 'center'; ctx.fillText(ft.text, ft.x, ft.y); }
+  ctx.textAlign = 'left'; ctx.restore();
+
+  if (bannerText && bannerText.life > 0) {
+    const alpha = Math.min(1, bannerText.life / bannerText.maxLife * 3);
+    ctx.save(); ctx.globalAlpha = alpha * 0.9;
+    ctx.fillStyle = bannerText.color; ctx.font = `bold ${bannerText.size}px monospace`;
+    ctx.textAlign = 'center'; ctx.shadowColor = bannerText.color; ctx.shadowBlur = 20;
+    ctx.fillText(bannerText.text, W / 2, H / 2 - 30);
+    ctx.restore(); ctx.textAlign = 'left';
+  }
+
+  ctx.restore(); // un-shake
+
+  if (playerHitFlash > 0) { ctx.fillStyle = `rgba(255,0,0,${playerHitFlash * 0.32})`; ctx.fillRect(0, 0, W, H); }
+
+  // HUD
+  ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(10, 10, 210, 68);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 20px monospace'; ctx.textAlign = 'left';
+  ctx.fillText(astSoloScore.toLocaleString(), 22, 36);
+  ctx.fillStyle = '#888'; ctx.font = '10px monospace';
+  ctx.fillText(`BEST ${astSoloHighScore.toLocaleString()}`, 22, 52);
+  ctx.fillStyle = '#aac'; ctx.fillText(`WAVE ${astSoloWave}`, 22, 68);
+  for (let i = 0; i < astSoloLives; i++) drawLifeIcon(150 + i * 20, 58);
+}
+
+function drawLifeIcon(x, y) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(-Math.PI / 2);
+  const pts = astShipShape(8);
+  ctx.beginPath();
+  pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+  ctx.closePath();
+  ctx.strokeStyle = AST_BLUE; ctx.lineWidth = 1.6; ctx.stroke();
+  ctx.restore();
+}
+
 // Elo update for ranked matches. Returns { delta, before, after }.
 function applyRankedResult(won) {
   const my = currentProfile.rating ?? 300;
@@ -2326,9 +2878,10 @@ function applyRankedResult(won) {
 
 function showServerResult(outcome, sub) {
   if (gameOver) return;
-  gameOver = true; serverMode = false; matchStarting = false;
+  gameOver = true; serverMode = false; astServerMode = false; matchStarting = false;
   document.exitPointerLock();
   if (netWS) { try { netWS.close(); } catch {} netWS = null; }
+  if (astWS) { try { astWS.close(); } catch {} astWS = null; }
   if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
   document.getElementById('online-indicator').classList.remove('show');
 
@@ -2341,18 +2894,21 @@ function showServerResult(outcome, sub) {
   const rankEl = document.getElementById('result-rank');
   rankEl.innerHTML = '';
   if (isMatchmade) {
-    if (matchRanked && outcome !== 'draw') {
-      const res = applyRankedResult(outcome === 'win');
-      const sign = res.delta >= 0 ? '+' : '';
-      let promo = '';
-      if (res.after.idx > res.before.idx || (res.after.idx === res.before.idx && res.after.roman !== res.before.roman && outcome === 'win'))
-        promo = `<div class="rank-promote" style="color:${res.after.tier.c1}">▲ PROMOTED</div>`;
-      else if (res.after.idx < res.before.idx)
-        promo = `<div class="rank-promote" style="color:#f87171">▼ DEMOTED</div>`;
-      rankEl.innerHTML = rankBadgeHTML(res.after.rating, true)
-        + `<div class="rank-delta ${res.delta >= 0 ? 'up' : 'down'}">${sign}${res.delta} MMR</div>` + promo;
-    } else {
-      rankEl.innerHTML = rankBadgeHTML(currentProfile.rating ?? 300, true);
+    // Asteroids has no ranked ladder (yet) — skip the MMR/rank badge entirely.
+    if (currentGame === 'boxfight') {
+      if (matchRanked && outcome !== 'draw') {
+        const res = applyRankedResult(outcome === 'win');
+        const sign = res.delta >= 0 ? '+' : '';
+        let promo = '';
+        if (res.after.idx > res.before.idx || (res.after.idx === res.before.idx && res.after.roman !== res.before.roman && outcome === 'win'))
+          promo = `<div class="rank-promote" style="color:${res.after.tier.c1}">▲ PROMOTED</div>`;
+        else if (res.after.idx < res.before.idx)
+          promo = `<div class="rank-promote" style="color:#f87171">▼ DEMOTED</div>`;
+        rankEl.innerHTML = rankBadgeHTML(res.after.rating, true)
+          + `<div class="rank-delta ${res.delta >= 0 ? 'up' : 'down'}">${sign}${res.delta} MMR</div>` + promo;
+      } else {
+        rankEl.innerHTML = rankBadgeHTML(currentProfile.rating ?? 300, true);
+      }
     }
     // Ranked random matches don't persist a lobby — part ways.
     leaveMatchmadeLobby();
@@ -2374,8 +2930,9 @@ function leaveMatchmadeLobby() {
 
 // Return to the persistent waiting room (same lobby + presence channel) for a rematch.
 function returnToLobby() {
-  gameOver = false; serverMode = false; matchStarting = false; amIReady = false;
+  gameOver = false; serverMode = false; astServerMode = false; matchStarting = false; amIReady = false;
   if (netWS) { try { netWS.close(); } catch {} netWS = null; }
+  if (astWS) { try { astWS.close(); } catch {} astWS = null; }
   if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
   document.getElementById('result').classList.remove('show');
   document.getElementById('online-indicator').classList.remove('show');
@@ -2421,6 +2978,10 @@ function loop(timestamp) {
         checkGameOver();
       } else if (serverMode) {
         stepServer(scaledDt);              // online: authoritative server
+      } else if (astServerMode) {
+        stepAstServer(scaledDt);           // asteroids PvP: authoritative server
+      } else if (gameMode === 'ast-solo') {
+        stepAstSolo(scaledDt);             // asteroids solo: client-owned, no server
       } else {                             // legacy fallback (unused)
         updatePlayer(scaledDt);
         interpRemote(scaledDt);
@@ -2466,7 +3027,7 @@ function init(mode) {
   combo=0; totalKills=0; bannerText=null; usingPotion=null;
 
   selectedWeapon = 'ar';
-  serverMode = false; lastWasOnline = false; isMatchmade = false; resultWasRanked = false;
+  serverMode = false; astServerMode = false; lastWasOnline = false; isMatchmade = false; resultWasRanked = false;
   pendingInput = { dash:false, edit:false, reset:false, reload:false, mini:false, bigpot:false };
 
   if (mode === 'vsbot' || mode === 'survival' || mode === 'freebuild') {
@@ -2535,6 +3096,10 @@ document.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (gameMode === 'menu' || document.getElementById('settings').classList.contains('show')) return;
   if (paused) return;
+  if (gameMode === 'ast-online' || gameMode === 'ast-solo') {   // Asteroids reads raw `keys{}` each frame (see gatherAstInput) — no per-keydown actions
+    if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+    return;
+  }
 
   const kb = keybinds;
 
@@ -2602,7 +3167,7 @@ canvas.addEventListener('mouseup',   e => { mouse.buttons=e.buttons; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
-  if (gameMode==='menu') return;
+  if (gameMode==='menu' || gameMode==='ast-online' || gameMode==='ast-solo') return;
   const cur = usesInputModel() ? selectedWeapon : player.weapon;
   const next = WEAPON_ORDER[(WEAPON_ORDER.indexOf(cur)+(e.deltaY>0?1:-1)+WEAPON_ORDER.length)%WEAPON_ORDER.length];
   if (usesInputModel()) selectedWeapon = next; else player.weapon = next;
@@ -2617,10 +3182,14 @@ document.querySelectorAll('[data-d]').forEach(btn => {
   });
 });
 
-function startGame(mode) { init(mode); canvas.requestPointerLock(); }
+function startGame(mode) {
+  if (mode === 'ast-solo') { initAstSolo(); canvas.requestPointerLock(); return; }
+  init(mode); canvas.requestPointerLock();
+}
 document.getElementById('btn-vsbot').addEventListener('click',    ()=>startGame('vsbot'));
 document.getElementById('btn-survival').addEventListener('click',  ()=>startGame('survival'));
 document.getElementById('btn-freebuild').addEventListener('click', ()=>startGame('freebuild'));
+document.getElementById('btn-play-ast-solo').addEventListener('click', ()=>startGame('ast-solo'));
 document.getElementById('btn-again').addEventListener('click', () => {
   if (resultWasRanked) {                                  // NEW MATCH → re-queue same type
     document.getElementById('result').classList.remove('show');
@@ -2650,7 +3219,7 @@ document.addEventListener('pointerlockchange', () => {
   if (locked) {
     paused = false;
     pauseEl.classList.remove('show');
-  } else if (gameMode !== 'menu' && gameMode !== 'freebuild' && !gameOver && !serverMode) {
+  } else if (gameMode !== 'menu' && gameMode !== 'freebuild' && !gameOver && !serverMode && !astServerMode) {
     // Don't pause online — the server keeps simulating; just release the cursor.
     paused = true;
     pauseEl.classList.add('show');
@@ -2703,7 +3272,10 @@ function cleanupOnline() {
   if (stateInterval) { clearInterval(stateInterval); stateInterval = null; }
   if (lobbyChannel)  { sb.removeChannel(lobbyChannel); lobbyChannel = null; }
   if (netWS) { try { netWS.close(); } catch {} netWS = null; }
+  if (astWS) { try { astWS.close(); } catch {} astWS = null; }
+  if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
   serverMode = false; netState = null; netPlayers = {};
+  astServerMode = false; astNetState = null; astShips = {};
   currentLobby = null; remotePlayers = {}; amIReady = false; matchStarting = false;
   document.getElementById('online-indicator').classList.remove('show');
 }
@@ -2814,6 +3386,26 @@ sb.auth.onAuthStateChange(async (event, session) => {
 });
 
 // ─── Lobby ────────────────────────────────────────────────────────────────────
+function modeLabel(m) { return m === 'ast1v1' ? 'ASTEROIDS · 1V1' : m.toUpperCase(); }
+
+// Swap the lobby hub's chrome between the two games — same DOM, same Supabase
+// lobby/matchmaking plumbing underneath (mode string is what actually partitions
+// asteroids matches from box-fight ones in the `lobbies` table).
+function enterGameLobbyUI() {
+  const isAst = currentGame === 'asteroids';
+  document.getElementById('lobby-emblem').textContent = isAst ? '🛸' : '🥊';
+  document.getElementById('lobby-tagline').textContent = isAst ? 'ASTEROIDS PVP ARENA' : 'BOX FIGHT ARENA';
+  document.getElementById('mode-seg').closest('.fn-mode-card').style.display = isAst ? 'none' : '';
+  document.getElementById('rank-badge-slot').style.display = isAst ? 'none' : '';
+  if (isAst) {
+    lobbyModeSelected = 'ast1v1'; mmMode = 'ast1v1';
+  } else {
+    const sel = document.querySelector('[data-m].sel');
+    lobbyModeSelected = sel ? sel.dataset.m : '1v1';
+    mmMode = lobbyModeSelected;
+  }
+}
+
 function rndCode() {
   const ch = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let s = '';
@@ -2853,9 +3445,10 @@ async function joinLobbyById(lobbyId, team) {
     .upsert({ lobby_id: lobbyId, player_id: currentUser.id, team, ready: false }, { onConflict: 'lobby_id,player_id' });
   if (error) { setLobbyErr(error.message); return; }
   currentLobby = lobby; myTeam = team; amIReady = false; matchStarting = false; isMatchmade = false;
+  currentGame = lobby.mode === 'ast1v1' ? 'asteroids' : 'boxfight';   // join-by-code may cross from the other game's lobby screen
   document.getElementById('lobby-screen').classList.remove('show');
   document.getElementById('lobby-code-disp').textContent = lobby.code;
-  document.getElementById('mode-disp').textContent = lobby.mode.toUpperCase();
+  document.getElementById('mode-disp').textContent = modeLabel(lobby.mode);
   document.getElementById('in-lobby').classList.add('show');
   subscribeLobby(lobbyId);
 }
@@ -2972,10 +3565,11 @@ function buildStartPayload(players, mode) {
 
 // ─── Game start handler ───────────────────────────────────────────────────────
 function handleGameStart({ assignments, mode, room, matchmade, ranked }) {
-  if (serverMode) return;   // already started (guard against duplicate broadcasts)
+  if (serverMode || astServerMode) return;   // already started (guard against duplicate broadcasts)
   if (typeof matchmade === 'boolean') isMatchmade = matchmade;
   matchRanked = !!ranked;
-  startServerGame(assignments, mode, room);
+  if (mode === 'ast1v1') startAsteroidsGame(assignments, mode, room);
+  else startServerGame(assignments, mode, room);
 }
 
 // ─── State broadcast ──────────────────────────────────────────────────────────
@@ -3048,10 +3642,12 @@ function mmTick() {
 // with a free slot and join it (auto-ready); otherwise create one and wait.
 async function startMatchmaking(ranked = true) {
   if (!currentUser || !currentProfile) return;
+  if (currentGame === 'asteroids') ranked = false;   // no ranked ladder for Asteroids PvP (yet)
   mmRanked = ranked;
   setLobbyErr('');
   document.getElementById('lobby-screen').classList.remove('show');
-  document.getElementById('mm-mode-label').textContent = `${ranked ? 'RANKED' : 'CASUAL'} · ${mmMode.toUpperCase()}`;
+  document.getElementById('mm-mode-label').textContent = currentGame === 'asteroids'
+    ? 'ASTEROIDS · 1V1' : `${ranked ? 'RANKED' : 'CASUAL'} · ${mmMode.toUpperCase()}`;
   document.getElementById('mm-status').textContent = 'Searching…';
   document.getElementById('mm-timer').textContent = '0:00';
   document.getElementById('matchmaking').classList.add('show');
@@ -3111,7 +3707,7 @@ async function joinMatchLobby(lobbyId, team) {
   if (error) { await cancelMatchmaking(); setLobbyErr(error.message); return; }
   currentLobby = lobby; myTeam = team; amIReady = true; matchStarting = false; isMatchmade = true;
   document.getElementById('lobby-code-disp').textContent = lobby.code;
-  document.getElementById('mode-disp').textContent = lobby.mode.toUpperCase();
+  document.getElementById('mode-disp').textContent = modeLabel(lobby.mode);
   document.getElementById('mm-status').textContent = 'Waiting for an opponent…';
   subscribeLobby(lobbyId, true);   // auto-ready presence
 }
@@ -3166,11 +3762,26 @@ async function enterMatchedLobby(lobbyId) {
 
 // ─── Online button wiring ─────────────────────────────────────────────────────
 document.getElementById('btn-play-online').addEventListener('click', () => {
+  currentGame = 'boxfight';
   authReturnTo = 'lobby';
   document.getElementById('menu').classList.remove('show');
+  enterGameLobbyUI();
   if (currentUser && currentProfile) {
     document.getElementById('lobby-screen').classList.add('show');
     updateRankUI();
+  } else {
+    document.getElementById('auth-err').textContent = '';
+    document.getElementById('auth').classList.add('show');
+  }
+});
+
+document.getElementById('btn-play-asteroids').addEventListener('click', () => {
+  currentGame = 'asteroids';
+  authReturnTo = 'lobby';
+  document.getElementById('menu').classList.remove('show');
+  enterGameLobbyUI();
+  if (currentUser && currentProfile) {
+    document.getElementById('lobby-screen').classList.add('show');
   } else {
     document.getElementById('auth-err').textContent = '';
     document.getElementById('auth').classList.add('show');

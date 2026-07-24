@@ -22,10 +22,12 @@
 import { WebSocketServer } from 'ws';
 import { createState, addPlayer, removePlayer, step as simStep } from '../shared/sim.js';
 import * as C from '../shared/constants.js';
+import * as AST from '../shared/ast-sim.js';
 
 const TICK_HZ = 30;
 const TICK_MS = 1000 / TICK_HZ;
 
+const isAsteroids = (mode) => mode === 'ast1v1';
 const expectedPlayers = (mode) => (mode === '2v2' ? 4 : 2);
 
 function spawnPoints(mode) {
@@ -75,22 +77,36 @@ export function startServer(port) {
   };
 
   function makeRoom(id, mode) {
-    return { id, mode, state: createState(), sockets: new Map(), pending: new Map(),
+    const game = isAsteroids(mode) ? 'asteroids' : 'boxfight';
+    return { id, mode, game, state: game === 'asteroids' ? AST.createState() : createState(),
+             sockets: new Map(), pending: new Map(),
              started: false, over: false, simNow: 0, handle: null, lastAck: {} };
   }
 
   function startMatch(room) {
     room.started = true;
-    const pts = spawnPoints(room.mode);
-    const used = { 0: 0, 1: 0 };
-    const assignments = [];
-    for (const [pid, ws] of room.sockets) {
-      const t = ws.team;
-      const slot = pts.filter(s => s.team === t)[used[t]++] || pts.find(s => s.team === t);
-      addPlayer(room.state, pid, { x: slot.x, y: slot.y, team: t });
-      assignments.push({ playerId: pid, username: ws.username, team: t, x: slot.x, y: slot.y });
+    if (room.game === 'asteroids') {
+      const assignments = [];
+      let slot = 0;
+      for (const [pid, ws] of room.sockets) {
+        const s = AST.addPlayer(room.state, pid, { slot: ws.team ?? slot });
+        slot++;
+        assignments.push({ playerId: pid, username: ws.username, team: s.slot, x: s.x, y: s.y });
+      }
+      AST.initField(room.state);
+      broadcast(room, { type: 'start', mode: room.mode, assignments });
+    } else {
+      const pts = spawnPoints(room.mode);
+      const used = { 0: 0, 1: 0 };
+      const assignments = [];
+      for (const [pid, ws] of room.sockets) {
+        const t = ws.team;
+        const slot = pts.filter(s => s.team === t)[used[t]++] || pts.find(s => s.team === t);
+        addPlayer(room.state, pid, { x: slot.x, y: slot.y, team: t });
+        assignments.push({ playerId: pid, username: ws.username, team: t, x: slot.x, y: slot.y });
+      }
+      broadcast(room, { type: 'start', mode: room.mode, assignments });
     }
-    broadcast(room, { type: 'start', mode: room.mode, assignments });
     room.handle = setInterval(() => tick(room), TICK_MS);
   }
 
@@ -103,6 +119,18 @@ export function startServer(port) {
       // Ack the input ACTUALLY simulated this tick (not merely received) so the
       // client replays exactly the right unacked inputs during reconciliation.
       if (typeof inp.seq === 'number') room.lastAck[pid] = inp.seq;
+    }
+
+    if (room.game === 'asteroids') {
+      const events = AST.step(room.state, inputs, room.simNow, TICK_MS);
+      const snap = { type: 'snapshot', tick: room.state.tick, now: room.simNow, state: AST.serialize(room.state), events };
+      for (const [pid, ws] of room.sockets) {
+        if (ws.readyState !== ws.OPEN) continue;
+        ws.send(JSON.stringify({ ...snap, ackSeq: room.lastAck[pid] ?? 0 }));
+      }
+      const winner = AST.checkWinner(room.state);
+      if (winner !== null) endMatch(room, winner);
+      return;
     }
 
     const events = simStep(room.state, inputs, room.simNow, TICK_MS);
@@ -167,14 +195,20 @@ export function startServer(port) {
 
   function handleLeave(ws) {
     const room = rooms.get(ws.roomId); if (!room) return;
+    const leftSlot = room.game === 'asteroids' ? room.state.ships[ws.playerId]?.slot : undefined;
     room.sockets.delete(ws.playerId);
     room.pending.delete(ws.playerId);
-    removePlayer(room.state, ws.playerId);
+    if (room.game === 'asteroids') AST.removePlayer(room.state, ws.playerId);
+    else removePlayer(room.state, ws.playerId);
     broadcast(room, { type: 'playerLeft', playerId: ws.playerId });
     if (room.sockets.size === 0) { clearInterval(room.handle); rooms.delete(room.id); return; }
     if (room.started && !room.over) {
-      const alive = aliveByTeam(room.state);
-      if (alive[0] === 0 || alive[1] === 0) endMatch(room, alive[0] > 0 ? 0 : 1);
+      if (room.game === 'asteroids') {
+        if (leftSlot !== undefined) endMatch(room, leftSlot === 0 ? 1 : 0);
+      } else {
+        const alive = aliveByTeam(room.state);
+        if (alive[0] === 0 || alive[1] === 0) endMatch(room, alive[0] > 0 ? 0 : 1);
+      }
     }
   }
 
