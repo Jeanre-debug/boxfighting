@@ -43,8 +43,15 @@ export function removePlayer(state, id) { delete state.ships[id]; }
 // in shared/sim.js).
 export function moveShip(ship, input, dt) {
   const steps = dt / 16.6667;
-  if (input.rotateLeft) ship.angle -= C.SHIP_TURN * steps;
-  if (input.rotateRight) ship.angle += C.SHIP_TURN * steps;
+  // Pro controls (mouse-look) send an absolute facing angle instead of turn
+  // keys — the ship snaps to face the cursor directly, same aim model as
+  // Box Fight's own twin-stick aiming.
+  if (typeof input.aimAngle === 'number') {
+    ship.angle = input.aimAngle;
+  } else {
+    if (input.rotateLeft) ship.angle -= C.SHIP_TURN * steps;
+    if (input.rotateRight) ship.angle += C.SHIP_TURN * steps;
+  }
   ship.thrusting = !!input.thrust;
   if (input.thrust) {
     ship.vx += Math.cos(ship.angle) * C.SHIP_THRUST * steps;
@@ -80,8 +87,13 @@ function spawnAsteroid(targetArr, size = 'large', x, y, vx, vy) {
 }
 
 export function initField(state, count = C.AST_INITIAL_COUNT) {
+  const ships = Object.values(state.ships);
+  const CLEARANCE = 160;   // keep spawns off any ship — matters most for Solo's center spawn
   for (let i = 0; i < count; i++) {
-    const x = rand(C.AST_W * 0.28, C.AST_W * 0.72), y = rand(0, C.AST_H);
+    let x, y, tries = 0;
+    do {
+      x = rand(C.AST_W * 0.28, C.AST_W * 0.72); y = rand(0, C.AST_H); tries++;
+    } while (tries < 12 && ships.some(s => Math.hypot(s.x - x, s.y - y) < CLEARANCE));
     spawnAsteroid(state.asteroids, 'large', x, y);
   }
   for (const a of state.asteroids) if (!a.id) a.id = state.nextId++;

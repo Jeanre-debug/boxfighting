@@ -505,6 +505,13 @@ canvas { display:block; cursor:none; border:1px solid var(--ghost); }
         <div class="sens-head"><span>MOUSE SENSITIVITY</span><span id="sens-val">1.40</span></div>
         <input type="range" id="sens-slider" class="sens-slider" min="0.2" max="4" step="0.05" value="1.4">
       </div>
+      <div class="sens-row">
+        <div class="sens-head"><span>ASTEROIDS CONTROLS</span></div>
+        <div class="diff-pills" id="ast-controls-seg">
+          <button class="diff-btn sel" data-ac="regular">REGULAR</button>
+          <button class="diff-btn" data-ac="pro">PRO · MOUSE-LOOK</button>
+        </div>
+      </div>
       <div class="bind-group">KEYBINDS</div>
       <div id="keybind-list"></div>
       <div class="settings-footer">
@@ -659,6 +666,7 @@ let astInputHistory = [];
 let astMySlot = 0, astOppUsername = '';
 let astShapeCache = new Map();  // asteroid id → stable jagged-polygon offsets
 let astStarfield = null;        // lazily-generated static star positions
+let astControlScheme = 'regular';   // 'regular' (rotate keys + Space fire) | 'pro' (mouse-look + Space boost)
 
 // ─── Asteroids Solo Arcade (offline, client-owned — same pattern as vsbot/survival) ─
 let astSoloState = null;
@@ -840,6 +848,7 @@ function keyLabel(code) {
 function loadKeybinds() {
   try { const s = localStorage.getItem('bf_binds'); if (s) keybinds = { ...DEFAULT_BINDS, ...JSON.parse(s) }; } catch(e) {}
   try { const v = parseFloat(localStorage.getItem('bf_sens')); if (v >= 0.2 && v <= 4) mouseSensitivity = v; } catch(e) {}
+  try { const c = localStorage.getItem('ast_controls'); if (c === 'regular' || c === 'pro') astControlScheme = c; } catch(e) {}
 }
 function saveKeybinds() {
   try { localStorage.setItem('bf_binds', JSON.stringify(keybinds)); } catch(e) {}
@@ -850,6 +859,7 @@ function openSettings(from) {
   const sl = document.getElementById('sens-slider');
   sl.value = mouseSensitivity;
   document.getElementById('sens-val').textContent = mouseSensitivity.toFixed(2);
+  document.querySelectorAll('#ast-controls-seg [data-ac]').forEach(b => b.classList.toggle('sel', b.dataset.ac === astControlScheme));
   renderSettingsUI();
   document.getElementById('settings').classList.add('show');
 }
@@ -2538,6 +2548,8 @@ function startAsteroidsGame(assignments, mode, room) {
   const sp = ASTC.SHIP_SPAWNS[astMySlot % ASTC.SHIP_SPAWNS.length];
   astPredicted = { x: sp.x, y: sp.y, angle: sp.angle, vx: 0, vy: 0, radius: ASTC.SHIP_RADIUS, lastFire: -9999 };
   astInputHistory = [];
+  virtualMouse.x = sp.x + Math.cos(sp.angle) * 120;
+  virtualMouse.y = sp.y + Math.sin(sp.angle) * 120;
 
   document.getElementById('menu').classList.remove('show');
   document.getElementById('in-lobby').classList.remove('show');
@@ -2635,7 +2647,16 @@ function syncAstGlobals() {
   if (rs && astPredicted) { rs.x = astPredicted.x; rs.y = astPredicted.y; rs.angle = astPredicted.angle; }
 }
 
-function gatherAstInput() {
+// `ship` is whichever ship this input will drive — needed in 'pro' mode to
+// compute the facing angle from the cursor's position relative to it.
+function gatherAstInput(ship) {
+  if (astControlScheme === 'pro') {
+    const locked = document.pointerLockElement === canvas;
+    const aimAngle = locked
+      ? Math.atan2(virtualMouse.y - ship.y, virtualMouse.x - ship.x)
+      : Math.atan2(mouse.y - ship.y, mouse.x - ship.x);
+    return { aimAngle, thrust: !!keys['Space'], fire: !!(mouse.buttons & 1) };
+  }
   return {
     rotateLeft:  !!(keys['ArrowLeft']  || keys['KeyA']),
     rotateRight: !!(keys['ArrowRight'] || keys['KeyD']),
@@ -2649,20 +2670,28 @@ function stepAstServer(scaledDt) {
   const rs = astShips[onlineMyId];
   if (!rs || !astPredicted) return;
 
+  const locked = document.pointerLockElement === canvas;
   const ind = document.getElementById('online-indicator');
   const col = netPing < 60 ? '#4ade80' : netPing < 120 ? '#ddaa22' : '#ff5544';
-  ind.innerHTML = `● ASTEROIDS · <span style="color:${col}">${netPing}ms</span>`;
+  ind.innerHTML = `● ASTEROIDS · <span style="color:${col}">${netPing}ms</span>`
+    + (astControlScheme === 'pro' && !locked ? ' · <span style="color:#888">click to lock aim</span>' : '');
 
-  const input = gatherAstInput();
+  const input = gatherAstInput(astPredicted);
   if (!rs.dead && astWS && astWS.readyState === WebSocket.OPEN) {
     const seq = astNetSeq++;
     astWS.send(JSON.stringify({ type: 'input', seq, input }));
+    const preX = astPredicted.x, preY = astPredicted.y;
     moveShip(astPredicted, input, scaledDt);
     astInputHistory.push({ seq, input, dt: scaledDt });
     if (astInputHistory.length > 240) astInputHistory.shift();
     if (input.thrust && Math.random() > 0.5) {
       const back = astPredicted.angle + Math.PI;
       spawnParticles(astPredicted.x + Math.cos(back) * ASTC.SHIP_RADIUS, astPredicted.y + Math.sin(back) * ASTC.SHIP_RADIUS, '#ffaa44', 1, 0.6);
+    }
+    // Keep the mouse-look reticle anchored relative to the ship as it drifts (same trick Box Fight uses for its own aim cursor)
+    if (astControlScheme === 'pro' && locked) {
+      virtualMouse.x += astPredicted.x - preX;
+      virtualMouse.y += astPredicted.y - preY;
     }
   }
 
@@ -2703,6 +2732,8 @@ function initAstSolo() {
   serverMode = false; astServerMode = false; lastWasOnline = false; isMatchmade = false; resultWasRanked = false;
   particles = []; explosions = []; afterimages = []; floatingTexts = []; killfeed = [];
   timeScale = 1.0; slowMoTimer = 0; shake.intensity = 0; playerHitFlash = 0; killFlash = 0; bannerText = null;
+  virtualMouse.x = ASTC.SOLO_SPAWN.x + Math.cos(ASTC.SOLO_SPAWN.angle) * 120;
+  virtualMouse.y = ASTC.SOLO_SPAWN.y + Math.sin(ASTC.SOLO_SPAWN.angle) * 120;
 
   document.getElementById('menu').classList.remove('show');
   document.getElementById('result').classList.remove('show');
@@ -2713,6 +2744,8 @@ function astSoloRespawnShip() {
   s.x = ASTC.SOLO_SPAWN.x; s.y = ASTC.SOLO_SPAWN.y; s.angle = ASTC.SOLO_SPAWN.angle;
   s.vx = 0; s.vy = 0; s.hp = ASTC.SHIP_HP; s.dead = false;
   s.spawnAt = performance.now();
+  virtualMouse.x = ASTC.SOLO_SPAWN.x + Math.cos(ASTC.SOLO_SPAWN.angle) * 120;
+  virtualMouse.y = ASTC.SOLO_SPAWN.y + Math.sin(ASTC.SOLO_SPAWN.angle) * 120;
 }
 
 function astSoloAdvanceWave() {
@@ -2785,7 +2818,13 @@ function stepAstSolo(scaledDt) {
   const s = astSoloState.ships.me;
   if (!s) return;
   if (!s.dead) {
-    const events = astStep(astSoloState, { me: gatherAstInput() }, performance.now(), scaledDt);
+    const locked = document.pointerLockElement === canvas;
+    const preX = s.x, preY = s.y;
+    const events = astStep(astSoloState, { me: gatherAstInput(s) }, performance.now(), scaledDt);
+    if (astControlScheme === 'pro' && locked) {
+      virtualMouse.x += s.x - preX;
+      virtualMouse.y += s.y - preY;
+    }
     applyAstSoloEvents(events);
   }
   if (gameOver) return;
@@ -3231,17 +3270,26 @@ document.getElementById('btn-settings-pause').addEventListener('click', () => { 
 document.getElementById('btn-exit-game').addEventListener('click', () => { document.getElementById('pause').classList.remove('show'); showMenu(); });
 document.getElementById('btn-settings-back').addEventListener('click',  closeSettings);
 document.getElementById('btn-defaults').addEventListener('click', () => {
-  keybinds = { ...DEFAULT_BINDS }; mouseSensitivity = 1.4;
-  try { localStorage.setItem('bf_sens', '1.4'); } catch(e) {}
+  keybinds = { ...DEFAULT_BINDS }; mouseSensitivity = 1.4; astControlScheme = 'regular';
+  try { localStorage.setItem('bf_sens', '1.4'); localStorage.setItem('ast_controls', 'regular'); } catch(e) {}
   saveKeybinds(); listeningFor = null;
   document.getElementById('sens-slider').value = 1.4;
   document.getElementById('sens-val').textContent = '1.40';
+  document.querySelectorAll('#ast-controls-seg [data-ac]').forEach(b => b.classList.toggle('sel', b.dataset.ac === 'regular'));
   renderSettingsUI();
 });
 document.getElementById('sens-slider').addEventListener('input', (e) => {
   mouseSensitivity = parseFloat(e.target.value);
   document.getElementById('sens-val').textContent = mouseSensitivity.toFixed(2);
   try { localStorage.setItem('bf_sens', String(mouseSensitivity)); } catch(err) {}
+});
+document.querySelectorAll('#ast-controls-seg [data-ac]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#ast-controls-seg [data-ac]').forEach(b => b.classList.remove('sel'));
+    btn.classList.add('sel');
+    astControlScheme = btn.dataset.ac;
+    try { localStorage.setItem('ast_controls', astControlScheme); } catch (e) {}
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
